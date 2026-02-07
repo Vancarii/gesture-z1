@@ -1,0 +1,8 @@
+prefix=/home/tangentlab/z1_ws/devel
+
+Name: z1_sdk
+Description: Description of z1_sdk
+Version: 0.1.0
+Cflags: -I/home/tangentlab/z1_ws/src/z1_sdk/include -I/usr/include/eigen3
+Libs: -L${prefix}/lib -lunitree_arm_sdk
+Requires: rospy

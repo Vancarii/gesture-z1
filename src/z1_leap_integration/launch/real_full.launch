@@ -1,0 +1,43 @@
+<launch>
+    <!--
+      Full gesture-to-arm pipeline for the REAL Z1 hardware.
+      Usage:   roslaunch z1_leap_integration real_full.launch
+      Starts:  Z1 hardware interface + MoveIt
+               + LeapC gesture detector (CNN + Brain)
+               + MoveIt gesture controller
+    -->
+
+    <!-- ============ Arguments ============ -->
+    <arg name="show_viz"          default="true"
+         doc="Show CV2 hand skeleton overlay window" />
+    <arg name="UnitreeGripperYN"  default="true" />
+    <arg name="rviz"              default="false" />
+
+    <!-- ============ 1. Real Z1 arm (controller + HW + MoveIt) ============ -->
+    <include file="$(find z1_bringup)/launch/real_arm.launch">
+        <arg name="UnitreeGripperYN" value="$(arg UnitreeGripperYN)" />
+        <arg name="rviz"             value="$(arg rviz)" />
+    </include>
+
+    <!-- ============ 2. Config params ============ -->
+    <rosparam file="$(find z1_leap_integration)/config/gesture_config.yaml"
+              command="load" />
+
+    <!-- ============ 3. Gesture Detector (LeapC + CNN + Brain) ============ -->
+    <node pkg="z1_leap_integration"
+          type="gesture_detector_ml.py"
+          name="gesture_detector_ml"
+          output="screen">
+        <param name="show_visualization" value="$(arg show_viz)" />
+    </node>
+
+    <!-- ============ 4. MoveIt Gesture Controller ============ -->
+    <node pkg="z1_leap_integration"
+          type="gesture_moveit_controller.py"
+          name="gesture_moveit_controller"
+          output="screen">
+        <param name="step_scale"      value="0.03" />
+        <param name="velocity_scale"  value="0.2" />
+    </node>
+
+</launch>

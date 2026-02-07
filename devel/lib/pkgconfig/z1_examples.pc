@@ -1,0 +1,8 @@
+prefix=/home/tangentlab/z1_ws/devel
+
+Name: z1_examples
+Description: Description of z1_examples
+Version: 0.1.0
+Cflags: -I/usr/include/eigen3
+Libs: -L${prefix}/lib 
+Requires: moveit_core moveit_visual_tools moveit_ros_planning_interface interactive_markers

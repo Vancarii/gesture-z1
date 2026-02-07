@@ -1,0 +1,8 @@
+prefix=/home/tangentlab/z1_ws/install
+
+Name: z1_controller
+Description: Description of z1_controller
+Version: 3.0.0
+Cflags: 
+Libs: -L${prefix}/lib 
+Requires: unitree_legged_msgs roslib

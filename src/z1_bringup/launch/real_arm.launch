@@ -1,0 +1,25 @@
+<launch>
+  <arg name="UnitreeGripperYN" default="true"/>
+
+  <arg name="controller" default="true" />
+  <arg name="ros_controller" default="true" />
+  <arg name="moveit" default="true" />
+  <arg name="rviz" default="false" />
+
+  <param name="robot_description" command="$(find xacro)/xacro --inorder '$(find z1_description)/xacro/robot.xacro'
+    UnitreeGripper:=$(arg UnitreeGripperYN)"/>
+
+  <include file="$(find z1_bringup)/launch/real_ctrl.launch" if="$(arg controller)"/>
+
+  <group if="$(arg ros_controller)">
+    <include file="$(find z1_hw)/launch/z1_hw.launch">
+      <arg name="UnitreeGripper" value="$(arg UnitreeGripperYN)"/>
+    </include>
+  </group>
+
+  <include file="$(find z1_moveit_config)/launch/move_group.launch" if="$(arg moveit)"/>
+
+  <include file="$(find z1_rviz)/launch/view_robot.launch" if="$(arg rviz)"/>
+
+  <node pkg="robot_state_publisher" type="robot_state_publisher" name="robot_state_publisher"/>
+</launch>

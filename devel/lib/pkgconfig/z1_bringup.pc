@@ -1,0 +1,8 @@
+prefix=/home/tangentlab/z1_ws/devel
+
+Name: z1_bringup
+Description: Description of z1_bringup
+Version: 0.1.0
+Cflags: 
+Libs: -L${prefix}/lib 
+Requires: 

@@ -1,0 +1,10 @@
+{
+	"InstallScripts" : 
+	[
+		"/home/tangentlab/z1_ws/src/z1_controller/build/cmake_install.cmake",
+		"/home/tangentlab/z1_ws/src/z1_controller/build/gtest/cmake_install.cmake",
+		"/home/tangentlab/z1_ws/src/z1_controller/build/gtest/googlemock/cmake_install.cmake",
+		"/home/tangentlab/z1_ws/src/z1_controller/build/gtest/googletest/cmake_install.cmake"
+	],
+	"Parallel" : false
+}

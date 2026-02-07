@@ -1,0 +1,8 @@
+prefix=/home/tangentlab/z1_ws/install
+
+Name: z1_moveit_config
+Description: Description of z1_moveit_config
+Version: 0.1.0
+Cflags: 
+Libs: -L${prefix}/lib 
+Requires: 

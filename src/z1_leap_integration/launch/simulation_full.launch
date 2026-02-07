@@ -1,0 +1,63 @@
+<launch>
+    <!--
+      Full gesture-to-arm simulation pipeline.
+
+      Lightweight (default):  roslaunch z1_leap_integration simulation_full.launch
+        → MoveIt fake controllers + RViz  (no physics, fast)
+
+      Gazebo:  roslaunch z1_leap_integration simulation_full.launch use_gazebo:=true
+        → Gazebo physics sim + ros_control + MoveIt + RViz
+
+      Gazebo only (no RViz):  roslaunch z1_leap_integration simulation_full.launch use_gazebo:=true rviz:=false
+
+      IMPORTANT: deactivate conda first!   conda deactivate
+    -->
+
+    <!-- ============ Arguments ============ -->
+    <arg name="show_viz"    default="true"
+         doc="Show CV2 hand skeleton overlay window" />
+    <arg name="pipeline"    default="ompl" />
+    <arg name="use_gazebo"  default="true"
+         doc="Use Gazebo physics simulation instead of MoveIt fake controllers" />
+    <arg name="rviz"        default="false"
+         doc="Show RViz visualization (applies to both modes)" />
+
+    <!-- ============ 1a. Lightweight: MoveIt fake controllers + RViz ============ -->
+    <include file="$(find z1_moveit_config)/launch/demo.launch"
+             unless="$(arg use_gazebo)">
+        <arg name="pipeline" value="$(arg pipeline)" />
+        <arg name="use_rviz" value="$(arg rviz)" />
+    </include>
+
+    <!-- ============ 1b. Gazebo: full physics sim + MoveIt ============ -->
+    <include file="$(find z1_bringup)/launch/sim_arm.launch"
+             if="$(arg use_gazebo)">
+        <arg name="rviz" value="$(arg rviz)" />
+    </include>
+
+    <!-- ============ 2. Config params ============ -->
+    <rosparam file="$(find z1_leap_integration)/config/gesture_config.yaml"
+              command="load" />
+
+    <!-- ============ 3. Gesture Detector (LeapC + CNN + Brain) ============ -->
+    <!--
+      This script uses the gesture-env conda Python (shebang).
+      roslaunch inherits PYTHONPATH so rospy is importable.
+    -->
+    <node pkg="z1_leap_integration"
+          type="gesture_detector_ml.py"
+          name="gesture_detector_ml"
+          output="screen">
+        <param name="show_visualization" value="$(arg show_viz)" />
+    </node>
+
+    <!-- ============ 4. MoveIt Gesture Controller ============ -->
+    <node pkg="z1_leap_integration"
+          type="gesture_moveit_controller.py"
+          name="gesture_moveit_controller"
+          output="screen">
+        <param name="step_scale"      value="0.04" />
+        <param name="velocity_scale"  value="0.3" />
+    </node>
+
+</launch>

@@ -1,0 +1,53 @@
+{
+  "gesture_classes": {
+    "none": 0,
+    "wave": 1,
+    "open_hand": 2,
+    "closed_fist": 3,
+    "thumbs_up": 4,
+    "thumbs_down": 5,
+    "point_up": 6,
+    "point_down": 7,
+    "point_left": 8,
+    "point_right": 9,
+    "swipe_back": 10,
+    "swipe_towards": 11,
+    "pull_back": 12,
+    "pause": 13,
+    "peace": 14,
+    "ok": 15
+  },
+  "action_classes": {
+    "idle": 0,
+    "approach": 1,
+    "retreat": 2,
+    "move_left": 3,
+    "move_right": 4,
+    "move_up": 5,
+    "move_down": 6,
+    "wave": 7,
+    "stop": 8,
+    "home": 9,
+    "pause": 10,
+    "grab": 11,
+    "release": 12,
+    "nod_yes": 13,
+    "nod_no": 14
+  },
+  "num_samples": 3389,
+  "collection_date": "2025-12-01T16:36:30.292098",
+  "gesture_distribution": {
+    "none": 3389
+  },
+  "action_distribution": {
+    "approach": 1074,
+    "retreat": 859,
+    "nod_yes": 320,
+    "move_down": 298,
+    "stop": 255,
+    "move_right": 202,
+    "pause": 162,
+    "move_up": 111,
+    "idle": 108
+  }
+}

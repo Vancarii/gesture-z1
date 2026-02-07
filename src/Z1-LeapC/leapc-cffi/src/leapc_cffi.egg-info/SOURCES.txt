@@ -1,0 +1,15 @@
+MANIFEST.in
+README.md
+setup.py
+src/leapc_cffi/LeapC.dll
+src/leapc_cffi/LeapC.h
+src/leapc_cffi/LeapC.lib
+src/leapc_cffi/__init__.py
+src/leapc_cffi/libLeapC.so
+src/leapc_cffi.egg-info/PKG-INFO
+src/leapc_cffi.egg-info/SOURCES.txt
+src/leapc_cffi.egg-info/dependency_links.txt
+src/leapc_cffi.egg-info/requires.txt
+src/leapc_cffi.egg-info/top_level.txt
+src/scripts/cffi_build.py
+src/scripts/cffi_src.h

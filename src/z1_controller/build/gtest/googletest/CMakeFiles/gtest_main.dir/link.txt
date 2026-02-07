@@ -1,0 +1,1 @@
+/usr/bin/c++ -fPIC  -O3 -std=c++14 -DNDEBUG -fPIC -shared -Wl,-soname,libgtest_main.so -o ../lib/libgtest_main.so CMakeFiles/gtest_main.dir/src/gtest_main.cc.o  -Wl,-rpath,/home/tangentlab/z1_ws/src/z1_controller/build/gtest/lib ../lib/libgtest.so -lpthread

@@ -1,0 +1,1 @@
+/usr/bin/c++ -fPIC  -O3 -std=c++14 -DNDEBUG -fPIC -shared -Wl,-soname,libgmock.so -o ../lib/libgmock.so "CMakeFiles/gmock.dir/src/gmock-all.cc.o"  -Wl,-rpath,/home/tangentlab/z1_ws/src/z1_controller/build/gtest/lib ../lib/libgtest.so -lpthread

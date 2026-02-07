@@ -1,0 +1,24 @@
+
+# Consider dependencies only in project.
+set(CMAKE_DEPENDS_IN_PROJECT_ONLY OFF)
+
+# The set of languages for which implicit dependencies are needed:
+set(CMAKE_DEPENDS_LANGUAGES
+  )
+
+# The set of dependency files which are needed:
+set(CMAKE_DEPENDS_DEPENDENCY_FILES
+  "/home/tangentlab/z1_ws/src/z1_controller/main.cpp" "z1_controller/CMakeFiles/z1_ctrl.dir/main.cpp.o" "gcc" "z1_controller/CMakeFiles/z1_ctrl.dir/main.cpp.o.d"
+  "/home/tangentlab/z1_ws/src/z1_controller/sim/IOROS.cpp" "z1_controller/CMakeFiles/z1_ctrl.dir/sim/IOROS.cpp.o" "gcc" "z1_controller/CMakeFiles/z1_ctrl.dir/sim/IOROS.cpp.o.d"
+  )
+
+# Targets to which this target links which contain Fortran sources.
+set(CMAKE_Fortran_TARGET_LINKED_INFO_FILES
+  )
+
+# Targets to which this target links which contain Fortran sources.
+set(CMAKE_Fortran_TARGET_FORWARD_LINKED_INFO_FILES
+  )
+
+# Fortran module output directory.
+set(CMAKE_Fortran_TARGET_MODULE_DIR "")
