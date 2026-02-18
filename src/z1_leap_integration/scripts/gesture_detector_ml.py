@@ -1,4 +1,5 @@
-#!/home/tangentlab/anaconda3/envs/gesture-env/bin/python
+#!/usr/bin/env -S /bin/bash -c 'conda run -n gesture-env python "$0" "$@"'
+# -*- coding: utf-8 -*-
 """
 ROS node: gesture_detector_ml
 
@@ -37,7 +38,10 @@ from collections import deque, Counter
 # ---------------------------------------------------------------------------
 # Path setup
 # ---------------------------------------------------------------------------
-Z1_LEAPC_ROOT = "/home/tangentlab/z1_ws/src/Z1-LeapC"
+# Resolve Z1-LeapC relative to this script so it works on any machine
+_SCRIPT_DIR   = os.path.dirname(os.path.realpath(__file__))
+_WS_SRC       = os.path.normpath(os.path.join(_SCRIPT_DIR, "..", ".."))
+Z1_LEAPC_ROOT = os.path.join(_WS_SRC, "Z1-LeapC")
 Z1_LEAPC_SRC  = os.path.join(Z1_LEAPC_ROOT, "src")
 sys.path.insert(0, Z1_LEAPC_SRC)
 
