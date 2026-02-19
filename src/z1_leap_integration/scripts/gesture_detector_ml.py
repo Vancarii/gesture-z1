@@ -33,7 +33,7 @@ if os.path.isfile(_CONDA_LIBSTDCPP):
 import time
 import json
 import numpy as np
-from collections import deque, Counter
+from collections import deque  # Counter removed (only used by TemporalSmoothening)
 
 # ---------------------------------------------------------------------------
 # Path setup
@@ -62,69 +62,53 @@ import rospy
 from std_msgs.msg import String
 
 import leap
-import torch
-import joblib
+# import torch   # ML: CNN inference
+# import joblib  # ML: scaler loading
 import cv2
 
-from architecture.preprocessing import extract_features
-from architecture.model_cnn import Net
+# from architecture.preprocessing import extract_features  # ML: CNN feature extraction
+# from architecture.model_cnn import Net                   # ML: CNN model
 
 
 # ===================================================================
-# Lightweight gesture -> action map  (replaces Brain + PPO)
+# ML: Gesture -> action map removed (PPO/CNN categorisation)
+# ===================================================================
+# _GESTURE_ALIASES = {
+#     "point forward": "swipe towards",
+#     "point back":    "swipe back",
+#     "move hand up":  "point up",
+#     "move hand down": "point down",
+#     "pause":         "background",
+# }
 #
-# The PPO in policy.py is trained against a reward function whose
-# optimal policy is a deterministic velocity direction per gesture.
-# We hard-code that converged mapping here so we don't need
-# stable_baselines3 / gymnasium / matplotlib at runtime.
-# ===================================================================
-_GESTURE_ALIASES = {
-    "point forward": "swipe towards",
-    "point back":    "swipe back",
-    "move hand up":  "point up",
-    "move hand down": "point down",
-    "pause":         "background",
-}
-
-# velocity magnitude used by the PPO-converged policy
-_V = 0.3
-
-_ACTION_TABLE = {
-    #  gesture (canonical)   cmdid    velocity (brain-space)       gripper
-    "swipe back":            {"cmdid": 0, "velocity": np.array([0.0, -_V, 0.0]), "gripper": 0.0},
-    "swipe towards":         {"cmdid": 1, "velocity": np.array([0.0,  _V, 0.0]), "gripper": 0.0},
-    "point up":              {"cmdid": 2, "velocity": np.array([0.0, 0.0,  _V]), "gripper": 0.0},
-    "point down":            {"cmdid": 3, "velocity": np.array([0.0, 0.0, -_V]), "gripper": 0.0},
-    "pull back":             {"cmdid": 4, "velocity": np.array([0.0, 0.0, 0.0]), "gripper": 1.0},
-    "background":            {"cmdid": 5, "velocity": np.array([0.0, 0.0, 0.0]), "gripper": 0.0},
-    "point left":            {"cmdid": 6, "velocity": np.array([-0.2, 0.0, 0.0]), "gripper": 0.0},
-    "point right":           {"cmdid": 7, "velocity": np.array([ 0.2, 0.0, 0.0]), "gripper": 0.0},
-}
-
-
-class GestureActionMap:
-    """Drop-in replacement for Brain.action() — no PPO needed."""
-
-    def __init__(self):
-        self._pos = np.array([0.5, 0.0, 0.5])   # virtual position tracker
-
-    def action(self, gesture):
-        canonical = _GESTURE_ALIASES.get(gesture, gesture)
-        spec = _ACTION_TABLE.get(canonical)
-        if spec is None:
-            return None
-        vel = spec["velocity"]
-        targetpos = self._pos + vel * 0.5
-        self._pos = targetpos.copy()
-        return {
-            "cmdid":      spec["cmdid"],
-            "velocity":   vel,
-            "targetpos":  targetpos,
-            "grippercmd": spec["gripper"],
-        }
-
-
-_brain = GestureActionMap()
+# _V = 0.3
+#
+# _ACTION_TABLE = {
+#     "swipe back":   {"cmdid": 0, "velocity": np.array([0.0, -_V, 0.0]), "gripper": 0.0},
+#     "swipe towards":{"cmdid": 1, "velocity": np.array([0.0,  _V, 0.0]), "gripper": 0.0},
+#     "point up":     {"cmdid": 2, "velocity": np.array([0.0, 0.0,  _V]), "gripper": 0.0},
+#     "point down":   {"cmdid": 3, "velocity": np.array([0.0, 0.0, -_V]), "gripper": 0.0},
+#     "pull back":    {"cmdid": 4, "velocity": np.array([0.0, 0.0, 0.0]), "gripper": 1.0},
+#     "background":   {"cmdid": 5, "velocity": np.array([0.0, 0.0, 0.0]), "gripper": 0.0},
+#     "point left":   {"cmdid": 6, "velocity": np.array([-0.2, 0.0, 0.0]), "gripper": 0.0},
+#     "point right":  {"cmdid": 7, "velocity": np.array([ 0.2, 0.0, 0.0]), "gripper": 0.0},
+# }
+#
+# class GestureActionMap:
+#     def __init__(self):
+#         self._pos = np.array([0.5, 0.0, 0.5])
+#     def action(self, gesture):
+#         canonical = _GESTURE_ALIASES.get(gesture, gesture)
+#         spec = _ACTION_TABLE.get(canonical)
+#         if spec is None:
+#             return None
+#         vel = spec["velocity"]
+#         targetpos = self._pos + vel * 0.5
+#         self._pos = targetpos.copy()
+#         return {"cmdid": spec["cmdid"], "velocity": vel,
+#                 "targetpos": targetpos, "grippercmd": spec["gripper"]}
+#
+# _brain = GestureActionMap()
 
 # ---------------------------------------------------------------------------
 # TrackingMode import (handles different leapc-python-api layouts)
@@ -144,46 +128,36 @@ except AttributeError:
 
 
 # ===================================================================
-# Helper: load CNN model + scaler + class labels
+# ML: load_models removed (CNN model + scaler + class labels)
 # ===================================================================
-def load_models(model_path=None):
-    if model_path is None:
-        model_path = os.path.join(Z1_LEAPC_SRC, "architecture", "models")
-
-    classes = np.load(os.path.join(model_path, "classes.npy"))
-    model   = Net(len(classes))
-    device  = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
-    model.load_state_dict(
-        torch.load(
-            os.path.join(model_path, "gesture_model_cnn.pth"),
-            map_location=device,
-        )
-    )
-    model.to(device)
-    model.eval()
-
-    # Load the TRAINED scaler (not a fresh one!)
-    scaler = joblib.load(os.path.join(model_path, "scalerCNN.pkl"))
-
-    rospy.loginfo("Models loaded: %d classes, device=%s", len(classes), device)
-    return model, scaler, classes, device
+# def load_models(model_path=None):
+#     if model_path is None:
+#         model_path = os.path.join(Z1_LEAPC_SRC, "architecture", "models")
+#     classes = np.load(os.path.join(model_path, "classes.npy"))
+#     model   = Net(len(classes))
+#     device  = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+#     model.load_state_dict(torch.load(
+#         os.path.join(model_path, "gesture_model_cnn.pth"), map_location=device))
+#     model.to(device)
+#     model.eval()
+#     scaler = joblib.load(os.path.join(model_path, "scalerCNN.pkl"))
+#     rospy.loginfo("Models loaded: %d classes, device=%s", len(classes), device)
+#     return model, scaler, classes, device
 
 
 # ===================================================================
-# Temporal smoothing (majority-vote over sliding window)
+# ML: TemporalSmoothening removed (majority-vote sliding window)
 # ===================================================================
-class TemporalSmoothening:
-    def __init__(self, buffersize=15):
-        self.buffer = deque(maxlen=buffersize)
-        self.lastpredict = "NAN"
-
-    def smooth(self, prediction):
-        self.buffer.append(prediction)
-        likely = Counter(self.buffer).most_common(1)[0]
-        if likely[1] > len(self.buffer) // 2:
-            self.lastpredict = likely[0]
-        return self.lastpredict
+# class TemporalSmoothening:
+#     def __init__(self, buffersize=15):
+#         self.buffer = deque(maxlen=buffersize)
+#         self.lastpredict = "NAN"
+#     def smooth(self, prediction):
+#         self.buffer.append(prediction)
+#         likely = Counter(self.buffer).most_common(1)[0]
+#         if likely[1] > len(self.buffer) // 2:
+#             self.lastpredict = likely[0]
+#         return self.lastpredict
 
 
 # ===================================================================
@@ -218,11 +192,11 @@ class Canvas:
     def render_hands(self, event):
         self.output_image[:, :] = 0
 
-        # --- Prediction / gesture label ---
-        cv2.putText(
-            self.output_image, f"Predict: {self.predict}",
-            (10, 120), cv2.FONT_HERSHEY_SIMPLEX, 1.0, self.font_colour, 3,
-        )
+        # --- Prediction / gesture label (ML removed) ---
+        # cv2.putText(
+        #     self.output_image, f"Predict: {self.predict}",
+        #     (10, 120), cv2.FONT_HERSHEY_SIMPLEX, 1.0, self.font_colour, 3,
+        # )
 
         # --- Direction text ---
         cv2.putText(
@@ -321,44 +295,47 @@ class Canvas:
 class GestureDetectorROS(leap.Listener):
     """
     Leap Motion listener that:
-      1. Extracts 19-dim features per frame
-      2. Classifies gesture with CNN after 90 frames
-      3. Runs Brain policy to get velocity / target-pos
-      4. Publishes JSON action message to /leap/gesture
-      5. (Optionally) renders CV2 hand visualisation
+      1. Detects pointing direction from index finger distal bone
+      2. Publishes pointing direction as JSON on /leap/gesture
+      3. Renders CV2 hand skeleton visualisation
+
+    ML/CNN gesture categorisation has been removed.
     """
 
-    def __init__(self, model, scaler, classes, device, brain,
-                 show_viz=True):
+    def __init__(self, show_viz=True):
         super().__init__()
-        self.model   = model
-        self.scaler  = scaler
-        self.classes = classes
-        self.device  = device
-        self.brain   = brain
+        # self.model   = model    # ML: CNN model
+        # self.scaler  = scaler   # ML: feature scaler
+        # self.classes = classes  # ML: gesture class labels
+        # self.device  = device   # ML: torch device
+        # self.brain   = brain    # ML: gesture->action map
 
         # ROS publisher
         self.pub = rospy.Publisher("/leap/gesture", String, queue_size=10)
 
-        # Feature buffer (90 frames ~ 1.5 s at 60 Hz)
-        self.prevhand      = None
-        self.prevhand2     = None
-        self.featurebuffer = deque(maxlen=90)
-        self.smoothening   = TemporalSmoothening(buffersize=15)
+        # ML: CNN input buffer removed
+        # self.prevhand      = None
+        # self.prevhand2     = None
+        # self.featurebuffer = deque(maxlen=90)
+        # self.smoothening   = TemporalSmoothening(buffersize=15)
 
-        # Timing & stability
-        self.eval_interval = 0.1
-        self.last_eval     = 0.0
-        self.threshold     = 0.85
-        self.stableframes  = 3
-        self.publish_hz    = 0.10
-        self.delta         = 0.01
+        # ML: inference throttling / stability params removed
+        # self.eval_interval = 0.1
+        # self.last_eval     = 0.0
+        # self.threshold     = 0.85
+        # self.stableframes  = 3
+        # self.publish_hz    = 0.10
+        # self.delta         = 0.01
 
-        self.history           = deque(maxlen=self.stableframes)
-        self.last_publish_time = 0
-        self.last_gesture      = None
-        self.last_velocity     = None
-        self.last_targetpos    = None
+        # self.history           = deque(maxlen=self.stableframes)  # ML: stability check
+        # self.last_publish_time = 0                                # ML: rate limiting
+        # self.last_gesture      = None                             # ML: dedup
+        # self.last_velocity     = None                             # ML: dedup
+        # self.last_targetpos    = None                             # ML: dedup
+
+        # Continuous pointing: fingertip world position + normalised direction vector
+        self.current_point_tip = None   # [x, y, z] mm in Leap world space
+        self.current_point_dir = None   # unit vector [dx, dy, dz]
 
         # Visualisation
         self.show_viz = show_viz
@@ -374,108 +351,124 @@ class GestureDetectorROS(leap.Listener):
 
         if len(event.hands) == 1:
             hand = event.hands[0]
-            feat = extract_features(hand, self.prevhand, self.prevhand2)
-            self.featurebuffer.append(feat)
-            self.prevhand2 = self.prevhand
-            self.prevhand  = hand
-            self._predict()
+
+            # --- Continuous pointing: fingertip position + direction vector ---
+            # digits[1] = index finger, bones[3] = distal (fingertip) bone.
+            try:
+                d_bone = hand.digits[1].bones[3]
+                tip  = np.array([d_bone.next_joint.x, d_bone.next_joint.y, d_bone.next_joint.z])
+                base = np.array([d_bone.prev_joint.x, d_bone.prev_joint.y, d_bone.prev_joint.z])
+                diff = tip - base
+                norm = np.linalg.norm(diff)
+                if norm > 1e-6:
+                    self.current_point_tip = tip.tolist()          # fingertip world position (mm)
+                    self.current_point_dir = (diff / norm).tolist() # unit direction vector
+                    if self.show_viz:
+                        self.canvas.palm_direction_text = (
+                            f"Tip : [{self.current_point_tip[0]:+6.1f}, "
+                            f"{self.current_point_tip[1]:+6.1f}, "
+                            f"{self.current_point_tip[2]:+6.1f}] mm  "
+                            f"Dir: [{self.current_point_dir[0]:+.2f}, "
+                            f"{self.current_point_dir[1]:+.2f}, "
+                            f"{self.current_point_dir[2]:+.2f}]"
+                        )
+                    # Publish tip position + direction on /leap/gesture
+                    msg = json.dumps({
+                        "tip_pos":   self.current_point_tip,
+                        "direction": self.current_point_dir,
+                    })
+                    self.pub.publish(msg)
+            except Exception as e:
+                rospy.logwarn_throttle(5.0, "Pointing detect error: %s", e)
+
+            # feat = extract_features(hand, self.prevhand, self.prevhand2)  # ML: CNN feature extraction
+            # self.featurebuffer.append(feat)                               # ML: CNN input buffer
+            # self.prevhand2 = self.prevhand                                # ML: frame history
+            # self.prevhand  = hand                                         # ML: frame history
+            # self._predict()                                               # ML: CNN inference
         else:
-            self.prevhand  = None
-            self.prevhand2 = None
-            self.featurebuffer.clear()
+            # self.prevhand  = None   # ML: frame history reset
+            # self.prevhand2 = None   # ML: frame history reset
+            self.current_point_tip = None
+            self.current_point_dir = None
+            # self.featurebuffer.clear()  # ML: CNN buffer reset
             if self.show_viz:
-                self.canvas.predict = self.smoothening.smooth("NAN")
+                # self.canvas.predict = self.smoothening.smooth("NAN")  # ML: smoothed prediction label
                 self.canvas.current_direction = "No hands detected"
 
-    # ---- CNN inference -----------------------------------------------
-    def _predict(self):
-        now = time.perf_counter()
-        if len(self.featurebuffer) < 90:
-            return
-        if now - self.last_eval < self.eval_interval:
-            return
-        self.last_eval = now
+    # ---- CNN inference (ML removed) ----------------------------------
+    # def _predict(self):
+    #     now = time.perf_counter()
+    #     if len(self.featurebuffer) < 90:
+    #         return
+    #     if now - self.last_eval < self.eval_interval:
+    #         return
+    #     self.last_eval = now
+    #     try:
+    #         sequence = np.array(self.featurebuffer)
+    #         scaled   = self.scaler.transform(sequence)
+    #         tensor   = (torch.tensor(scaled, dtype=torch.float32)
+    #                          .unsqueeze(0).to(self.device))
+    #         with torch.no_grad():
+    #             output = self.model(tensor)
+    #             probs  = torch.softmax(output, dim=1)
+    #             conf_val, pred_idx = torch.max(probs, 1)
+    #             confidence = conf_val.item()
+    #             prediction = self.classes[pred_idx.item()]
+    #         if confidence < self.threshold:
+    #             if self.show_viz:
+    #                 self.canvas.predict = self.smoothening.smooth("NAN")
+    #             return
+    #         self.history.append((prediction, confidence))
+    #         stable = (
+    #             len(self.history) == self.stableframes
+    #             and all(g == prediction and c >= self.threshold
+    #                     for g, c in self.history)
+    #         )
+    #         if self.show_viz:
+    #             self.canvas.predict = self.smoothening.smooth(
+    #                 prediction if stable else "NAN")
+    #             self.canvas.current_direction = prediction if stable else ""
+    #         if stable:
+    #             self._publish_action(prediction, confidence)
+    #     except Exception as e:
+    #         rospy.logwarn("Prediction error: %s", e)
 
-        try:
-            sequence = np.array(self.featurebuffer)
-            scaled   = self.scaler.transform(sequence)
-            tensor   = (torch.tensor(scaled, dtype=torch.float32)
-                             .unsqueeze(0).to(self.device))
-
-            with torch.no_grad():
-                output = self.model(tensor)
-                probs  = torch.softmax(output, dim=1)
-                conf_val, pred_idx = torch.max(probs, 1)
-                confidence = conf_val.item()
-                prediction = self.classes[pred_idx.item()]
-
-            if confidence < self.threshold:
-                if self.show_viz:
-                    self.canvas.predict = self.smoothening.smooth("NAN")
-                return
-
-            # Temporal stability check
-            self.history.append((prediction, confidence))
-            stable = (
-                len(self.history) == self.stableframes
-                and all(
-                    g == prediction and c >= self.threshold
-                    for g, c in self.history
-                )
-            )
-
-            if self.show_viz:
-                self.canvas.predict = self.smoothening.smooth(
-                    prediction if stable else "NAN"
-                )
-                self.canvas.current_direction = prediction if stable else ""
-
-            if stable:
-                self._publish_action(prediction, confidence)
-
-        except Exception as e:
-            rospy.logwarn("Prediction error: %s", e)
-
-    # ---- Brain -> ROS publish ----------------------------------------
-    def _publish_action(self, gesture, confidence):
-        action = self.brain.action(gesture)
-        if action is None:
-            return
-
-        curr = time.time()
-        if curr - self.last_publish_time < self.publish_hz:
-            return
-
-        # Avoid flooding identical commands
-        motion = False
-        if self.last_velocity is None or self.last_targetpos is None:
-            motion = True
-        else:
-            dv = np.linalg.norm(action["velocity"] - self.last_velocity)
-            tp = np.linalg.norm(action["targetpos"] - self.last_targetpos)
-            if dv > self.delta or tp > self.delta:
-                motion = True
-        if gesture != self.last_gesture:
-            motion = True
-        if not motion:
-            return
-
-        msg = {
-            "gesture":    str(gesture),
-            "confidence": float(confidence),
-            "cmdid":      int(action["cmdid"]),
-            "velocity":   [float(v) for v in action["velocity"]],
-            "targetpos":  [float(v) for v in action["targetpos"]],
-            "grippercmd": float(action["grippercmd"]),
-        }
-        self.pub.publish(json.dumps(msg))
-        rospy.loginfo("Published: %s  conf=%.2f  vel=%s",
-                      gesture, confidence, msg["velocity"])
-
-        self.last_publish_time = curr
-        self.last_gesture   = gesture
-        self.last_velocity  = action["velocity"].copy()
-        self.last_targetpos = action["targetpos"].copy()
+    # ---- Brain -> ROS publish (ML removed) ---------------------------
+    # def _publish_action(self, gesture, confidence):
+    #     action = self.brain.action(gesture)
+    #     if action is None:
+    #         return
+    #     curr = time.time()
+    #     if curr - self.last_publish_time < self.publish_hz:
+    #         return
+    #     motion = False
+    #     if self.last_velocity is None or self.last_targetpos is None:
+    #         motion = True
+    #     else:
+    #         dv = np.linalg.norm(action["velocity"] - self.last_velocity)
+    #         tp = np.linalg.norm(action["targetpos"] - self.last_targetpos)
+    #         if dv > self.delta or tp > self.delta:
+    #             motion = True
+    #     if gesture != self.last_gesture:
+    #         motion = True
+    #     if not motion:
+    #         return
+    #     msg = {
+    #         "gesture":    str(gesture),
+    #         "confidence": float(confidence),
+    #         "cmdid":      int(action["cmdid"]),
+    #         "velocity":   [float(v) for v in action["velocity"]],
+    #         "targetpos":  [float(v) for v in action["targetpos"]],
+    #         "grippercmd": float(action["grippercmd"]),
+    #     }
+    #     self.pub.publish(json.dumps(msg))
+    #     rospy.loginfo("Published: %s  conf=%.2f  vel=%s",
+    #                   gesture, confidence, msg["velocity"])
+    #     self.last_publish_time = curr
+    #     self.last_gesture   = gesture
+    #     self.last_velocity  = action["velocity"].copy()
+    #     self.last_targetpos = action["targetpos"].copy()
 
 
 # ===================================================================
@@ -485,12 +478,9 @@ def main():
     rospy.init_node("gesture_detector_ml")
     show_viz = rospy.get_param("~show_visualization", True)
 
-    model, scaler, classes, device = load_models()
+    # model, scaler, classes, device = load_models()  # ML: CNN model loading
 
-    detector = GestureDetectorROS(
-        model, scaler, classes, device, _brain,
-        show_viz=show_viz,
-    )
+    detector = GestureDetectorROS(show_viz=show_viz)
 
     connection = leap.Connection()
     connection.add_listener(detector)
