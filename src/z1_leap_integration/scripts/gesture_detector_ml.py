@@ -62,53 +62,7 @@ import rospy
 from std_msgs.msg import String
 
 import leap
-# import torch   # ML: CNN inference
-# import joblib  # ML: scaler loading
 import cv2
-
-# from architecture.preprocessing import extract_features  # ML: CNN feature extraction
-# from architecture.model_cnn import Net                   # ML: CNN model
-
-
-# ===================================================================
-# ML: Gesture -> action map removed (PPO/CNN categorisation)
-# ===================================================================
-# _GESTURE_ALIASES = {
-#     "point forward": "swipe towards",
-#     "point back":    "swipe back",
-#     "move hand up":  "point up",
-#     "move hand down": "point down",
-#     "pause":         "background",
-# }
-#
-# _V = 0.3
-#
-# _ACTION_TABLE = {
-#     "swipe back":   {"cmdid": 0, "velocity": np.array([0.0, -_V, 0.0]), "gripper": 0.0},
-#     "swipe towards":{"cmdid": 1, "velocity": np.array([0.0,  _V, 0.0]), "gripper": 0.0},
-#     "point up":     {"cmdid": 2, "velocity": np.array([0.0, 0.0,  _V]), "gripper": 0.0},
-#     "point down":   {"cmdid": 3, "velocity": np.array([0.0, 0.0, -_V]), "gripper": 0.0},
-#     "pull back":    {"cmdid": 4, "velocity": np.array([0.0, 0.0, 0.0]), "gripper": 1.0},
-#     "background":   {"cmdid": 5, "velocity": np.array([0.0, 0.0, 0.0]), "gripper": 0.0},
-#     "point left":   {"cmdid": 6, "velocity": np.array([-0.2, 0.0, 0.0]), "gripper": 0.0},
-#     "point right":  {"cmdid": 7, "velocity": np.array([ 0.2, 0.0, 0.0]), "gripper": 0.0},
-# }
-#
-# class GestureActionMap:
-#     def __init__(self):
-#         self._pos = np.array([0.5, 0.0, 0.5])
-#     def action(self, gesture):
-#         canonical = _GESTURE_ALIASES.get(gesture, gesture)
-#         spec = _ACTION_TABLE.get(canonical)
-#         if spec is None:
-#             return None
-#         vel = spec["velocity"]
-#         targetpos = self._pos + vel * 0.5
-#         self._pos = targetpos.copy()
-#         return {"cmdid": spec["cmdid"], "velocity": vel,
-#                 "targetpos": targetpos, "grippercmd": spec["gripper"]}
-#
-# _brain = GestureActionMap()
 
 # ---------------------------------------------------------------------------
 # TrackingMode import (handles different leapc-python-api layouts)
@@ -128,36 +82,53 @@ except AttributeError:
 
 
 # ===================================================================
-# ML: load_models removed (CNN model + scaler + class labels)
+# Pointing direction → human-readable label
 # ===================================================================
-# def load_models(model_path=None):
-#     if model_path is None:
-#         model_path = os.path.join(Z1_LEAPC_SRC, "architecture", "models")
-#     classes = np.load(os.path.join(model_path, "classes.npy"))
-#     model   = Net(len(classes))
-#     device  = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-#     model.load_state_dict(torch.load(
-#         os.path.join(model_path, "gesture_model_cnn.pth"), map_location=device))
-#     model.to(device)
-#     model.eval()
-#     scaler = joblib.load(os.path.join(model_path, "scalerCNN.pkl"))
-#     rospy.loginfo("Models loaded: %d classes, device=%s", len(classes), device)
-#     return model, scaler, classes, device
+def _pointing_label(direction):
+    """
+    Return a compact direction label from a unit vector.
+    Leap desktop axes: +X = right, +Y = up, +Z = toward user (i.e. -Z = away/forward).
+    Only axes whose component exceeds 0.25 are included.
+    """
+    d = np.array(direction)
+    pos_names = ['R', 'Up', 'ToUser']
+    neg_names = ['L', 'Dn', 'Fwd']
+    parts = []
+    for i in range(3):
+        if abs(d[i]) > 0.25:
+            parts.append(pos_names[i] if d[i] > 0 else neg_names[i])
+    return '-'.join(parts) if parts else 'Pointing'
 
 
 # ===================================================================
-# ML: TemporalSmoothening removed (majority-vote sliding window)
+# Physical setup constants
 # ===================================================================
-# class TemporalSmoothening:
-#     def __init__(self, buffersize=15):
-#         self.buffer = deque(maxlen=buffersize)
-#         self.lastpredict = "NAN"
-#     def smooth(self, prediction):
-#         self.buffer.append(prediction)
-#         likely = Counter(self.buffer).most_common(1)[0]
-#         if likely[1] > len(self.buffer) // 2:
-#             self.lastpredict = likely[0]
-#         return self.lastpredict
+# Distance from Leap Motion sensor to robotic arm base (mm)
+ARM_DISTANCE_FROM_LEAP_MM: float = 120.0          # 12 cm
+
+# Arm base position vector in Leap sensor frame (mm).
+# Leap desktop mode axes: +X = right, +Y = up, +Z = toward user.
+# Default: arm is mounted 12 cm directly behind the sensor (−Z = away from user).
+# Adjust this vector to match your physical setup.
+LEAP_TO_ARM_OFFSET_MM: np.ndarray = np.array([0.0, 0.0, -ARM_DISTANCE_FROM_LEAP_MM])
+
+# All pointable objects sit on a sphere of this radius centred on the arm base.
+OBJECT_DISTANCE_M:  float = 5.0                        # 5 metres
+OBJECT_DISTANCE_MM: float = OBJECT_DISTANCE_M * 1000.0  # 5000 mm
+
+# Leap sensor tilt correction
+# The sensor face is tilted 35° upward toward the user from horizontal.
+# Applying Rx(+35°) converts Leap device-frame coordinates to world frame
+# (world: +X = right, +Y = up, +Z = toward user).
+LEAP_TILT_DEG: float = 35.0
+_ct = np.cos(np.radians(LEAP_TILT_DEG))
+_st = np.sin(np.radians(LEAP_TILT_DEG))
+LEAP_TILT_R: np.ndarray = np.array([
+    [1.0,  0.0,  0.0],
+    [0.0,  _ct, -_st],
+    [0.0,  _st,  _ct],
+], dtype=float)
+del _ct, _st
 
 
 # ===================================================================
@@ -179,6 +150,7 @@ class Canvas:
         self.tracking_mode = None
         self.current_direction = "No hands detected"
         self.palm_direction_text = ""
+        self.target_text = ""
 
     def get_joint_position(self, bone):
         if bone is None:
@@ -192,12 +164,6 @@ class Canvas:
     def render_hands(self, event):
         self.output_image[:, :] = 0
 
-        # --- Prediction / gesture label (ML removed) ---
-        # cv2.putText(
-        #     self.output_image, f"Predict: {self.predict}",
-        #     (10, 120), cv2.FONT_HERSHEY_SIMPLEX, 1.0, self.font_colour, 3,
-        # )
-
         # --- Direction text ---
         cv2.putText(
             self.output_image, f"Direction: {self.current_direction}",
@@ -210,6 +176,12 @@ class Canvas:
             (10, 90), cv2.FONT_HERSHEY_SIMPLEX, 0.5, self.font_colour, 1,
         )
 
+        # --- Computed target coordinates ---
+        cv2.putText(
+            self.output_image, self.target_text,
+            (10, 115), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 200, 255), 1,
+        )
+
         # --- Tracking mode ---
         _TRACKING_NAMES = {
             TrackingMode.Desktop: "Desktop",
@@ -217,7 +189,7 @@ class Canvas:
             TrackingMode.ScreenTop: "ScreenTop",
         }
         cv2.putText(
-            self.output_image,
+            self.output_image, 
             f"Tracking Mode: {_TRACKING_NAMES.get(self.tracking_mode, 'Unknown')}",
             (10, self.screen_size[0] - 10),
             cv2.FONT_HERSHEY_SIMPLEX, 0.5, self.font_colour, 1,
@@ -304,38 +276,15 @@ class GestureDetectorROS(leap.Listener):
 
     def __init__(self, show_viz=True):
         super().__init__()
-        # self.model   = model    # ML: CNN model
-        # self.scaler  = scaler   # ML: feature scaler
-        # self.classes = classes  # ML: gesture class labels
-        # self.device  = device   # ML: torch device
-        # self.brain   = brain    # ML: gesture->action map
 
-        # ROS publisher
-        self.pub = rospy.Publisher("/leap/gesture", String, queue_size=10)
-
-        # ML: CNN input buffer removed
-        # self.prevhand      = None
-        # self.prevhand2     = None
-        # self.featurebuffer = deque(maxlen=90)
-        # self.smoothening   = TemporalSmoothening(buffersize=15)
-
-        # ML: inference throttling / stability params removed
-        # self.eval_interval = 0.1
-        # self.last_eval     = 0.0
-        # self.threshold     = 0.85
-        # self.stableframes  = 3
-        # self.publish_hz    = 0.10
-        # self.delta         = 0.01
-
-        # self.history           = deque(maxlen=self.stableframes)  # ML: stability check
-        # self.last_publish_time = 0                                # ML: rate limiting
-        # self.last_gesture      = None                             # ML: dedup
-        # self.last_velocity     = None                             # ML: dedup
-        # self.last_targetpos    = None                             # ML: dedup
+        # ROS publishers
+        self.pub        = rospy.Publisher("/leap/gesture",          String, queue_size=10)
+        self.target_pub = rospy.Publisher("/leap/pointing_target", String, queue_size=10)
 
         # Continuous pointing: fingertip world position + normalised direction vector
         self.current_point_tip = None   # [x, y, z] mm in Leap world space
         self.current_point_dir = None   # unit vector [dx, dy, dz]
+        self.current_target_m  = None   # [x, y, z] m  in arm base frame
 
         # Visualisation
         self.show_viz = show_viz
@@ -343,6 +292,43 @@ class GestureDetectorROS(leap.Listener):
             self.canvas = Canvas()
 
         rospy.loginfo("GestureDetectorROS initialised")
+
+    # ---- Pointing target computation ---------------------------------
+    def _compute_target_point(self, tip_mm, direction):
+        """
+        Compute where the pointing ray intersects the sphere of radius
+        OBJECT_DISTANCE_MM centred on the arm base.
+
+        The ray is:  P(t) = tip_mm + t * direction
+        The sphere:  |P(t) - LEAP_TO_ARM_OFFSET_MM|² = OBJECT_DISTANCE_MM²
+
+        Substituting p = tip_mm - arm_pos  and expanding gives:
+            t² + 2(p·d)t + (|p|² - R²) = 0
+        We take the positive (forward) root.
+
+        Parameters
+        ----------
+        tip_mm    : array-like (3,)  fingertip position in Leap frame, mm
+        direction : array-like (3,)  unit pointing direction vector
+
+        Returns
+        -------
+        list[float]  target [x, y, z] in arm base frame, **metres**
+        """
+        p = np.array(tip_mm, dtype=float) - LEAP_TO_ARM_OFFSET_MM  # tip rel. to arm (mm)
+        d = np.array(direction, dtype=float)                        # unit vector
+
+        pdotd        = float(np.dot(p, d))
+        discriminant = pdotd ** 2 - (float(np.dot(p, p)) - OBJECT_DISTANCE_MM ** 2)
+
+        if discriminant >= 0.0:
+            t = -pdotd + np.sqrt(discriminant)   # forward intersection
+            target_arm_mm = p + t * d
+        else:
+            # Ray misses the sphere — project onto nearest surface point instead
+            target_arm_mm = d * OBJECT_DISTANCE_MM
+
+        return (target_arm_mm / 1000.0).tolist()   # mm → metres
 
     # ---- Leap callback -----------------------------------------------
     def on_tracking_event(self, event):
@@ -361,9 +347,18 @@ class GestureDetectorROS(leap.Listener):
                 diff = tip - base
                 norm = np.linalg.norm(diff)
                 if norm > 1e-6:
-                    self.current_point_tip = tip.tolist()          # fingertip world position (mm)
-                    self.current_point_dir = (diff / norm).tolist() # unit direction vector
+                    # Convert from Leap device frame to world frame (45° tilt correction)
+                    tip_world = LEAP_TILT_R @ tip
+                    dir_world  = LEAP_TILT_R @ (diff / norm)
+                    self.current_point_tip = tip_world.tolist()    # fingertip world pos (mm)
+                    self.current_point_dir = dir_world.tolist()    # unit direction (world frame)
+                    # Compute where the pointing ray hits the object sphere
+                    self.current_target_m = self._compute_target_point(
+                        self.current_point_tip, self.current_point_dir
+                    )
+
                     if self.show_viz:
+                        self.canvas.current_direction = _pointing_label(self.current_point_dir)
                         self.canvas.palm_direction_text = (
                             f"Tip : [{self.current_point_tip[0]:+6.1f}, "
                             f"{self.current_point_tip[1]:+6.1f}, "
@@ -372,104 +367,36 @@ class GestureDetectorROS(leap.Listener):
                             f"{self.current_point_dir[1]:+.2f}, "
                             f"{self.current_point_dir[2]:+.2f}]"
                         )
-                    # Publish tip position + direction on /leap/gesture
+                        tgt = self.current_target_m
+                        dist = float(np.linalg.norm(tgt))  # should always be ~5.0 m
+                        self.canvas.target_text = (
+                            f"Target: [{tgt[0]:+.3f}, {tgt[1]:+.3f}, {tgt[2]:+.3f}] m"
+                            f"  |d|={dist:.3f}m"
+                        )
+
+                    # Publish full pointing data on /leap/gesture
                     msg = json.dumps({
-                        "tip_pos":   self.current_point_tip,
-                        "direction": self.current_point_dir,
+                        "tip_pos":      self.current_point_tip,
+                        "direction":    self.current_point_dir,
+                        "target_pos_m": self.current_target_m,
                     })
                     self.pub.publish(msg)
+
+                    # Also publish target coordinates alone on /leap/pointing_target
+                    self.target_pub.publish(json.dumps({
+                        "target_pos_m": self.current_target_m,   # [x, y, z] metres, arm base frame
+                        "frame":        "arm_base",
+                    }))
             except Exception as e:
                 rospy.logwarn_throttle(5.0, "Pointing detect error: %s", e)
 
-            # feat = extract_features(hand, self.prevhand, self.prevhand2)  # ML: CNN feature extraction
-            # self.featurebuffer.append(feat)                               # ML: CNN input buffer
-            # self.prevhand2 = self.prevhand                                # ML: frame history
-            # self.prevhand  = hand                                         # ML: frame history
-            # self._predict()                                               # ML: CNN inference
         else:
-            # self.prevhand  = None   # ML: frame history reset
-            # self.prevhand2 = None   # ML: frame history reset
             self.current_point_tip = None
             self.current_point_dir = None
-            # self.featurebuffer.clear()  # ML: CNN buffer reset
+            self.current_target_m  = None
             if self.show_viz:
-                # self.canvas.predict = self.smoothening.smooth("NAN")  # ML: smoothed prediction label
                 self.canvas.current_direction = "No hands detected"
-
-    # ---- CNN inference (ML removed) ----------------------------------
-    # def _predict(self):
-    #     now = time.perf_counter()
-    #     if len(self.featurebuffer) < 90:
-    #         return
-    #     if now - self.last_eval < self.eval_interval:
-    #         return
-    #     self.last_eval = now
-    #     try:
-    #         sequence = np.array(self.featurebuffer)
-    #         scaled   = self.scaler.transform(sequence)
-    #         tensor   = (torch.tensor(scaled, dtype=torch.float32)
-    #                          .unsqueeze(0).to(self.device))
-    #         with torch.no_grad():
-    #             output = self.model(tensor)
-    #             probs  = torch.softmax(output, dim=1)
-    #             conf_val, pred_idx = torch.max(probs, 1)
-    #             confidence = conf_val.item()
-    #             prediction = self.classes[pred_idx.item()]
-    #         if confidence < self.threshold:
-    #             if self.show_viz:
-    #                 self.canvas.predict = self.smoothening.smooth("NAN")
-    #             return
-    #         self.history.append((prediction, confidence))
-    #         stable = (
-    #             len(self.history) == self.stableframes
-    #             and all(g == prediction and c >= self.threshold
-    #                     for g, c in self.history)
-    #         )
-    #         if self.show_viz:
-    #             self.canvas.predict = self.smoothening.smooth(
-    #                 prediction if stable else "NAN")
-    #             self.canvas.current_direction = prediction if stable else ""
-    #         if stable:
-    #             self._publish_action(prediction, confidence)
-    #     except Exception as e:
-    #         rospy.logwarn("Prediction error: %s", e)
-
-    # ---- Brain -> ROS publish (ML removed) ---------------------------
-    # def _publish_action(self, gesture, confidence):
-    #     action = self.brain.action(gesture)
-    #     if action is None:
-    #         return
-    #     curr = time.time()
-    #     if curr - self.last_publish_time < self.publish_hz:
-    #         return
-    #     motion = False
-    #     if self.last_velocity is None or self.last_targetpos is None:
-    #         motion = True
-    #     else:
-    #         dv = np.linalg.norm(action["velocity"] - self.last_velocity)
-    #         tp = np.linalg.norm(action["targetpos"] - self.last_targetpos)
-    #         if dv > self.delta or tp > self.delta:
-    #             motion = True
-    #     if gesture != self.last_gesture:
-    #         motion = True
-    #     if not motion:
-    #         return
-    #     msg = {
-    #         "gesture":    str(gesture),
-    #         "confidence": float(confidence),
-    #         "cmdid":      int(action["cmdid"]),
-    #         "velocity":   [float(v) for v in action["velocity"]],
-    #         "targetpos":  [float(v) for v in action["targetpos"]],
-    #         "grippercmd": float(action["grippercmd"]),
-    #     }
-    #     self.pub.publish(json.dumps(msg))
-    #     rospy.loginfo("Published: %s  conf=%.2f  vel=%s",
-    #                   gesture, confidence, msg["velocity"])
-    #     self.last_publish_time = curr
-    #     self.last_gesture   = gesture
-    #     self.last_velocity  = action["velocity"].copy()
-    #     self.last_targetpos = action["targetpos"].copy()
-
+                self.canvas.target_text = ""
 
 # ===================================================================
 # Entry point
@@ -477,8 +404,6 @@ class GestureDetectorROS(leap.Listener):
 def main():
     rospy.init_node("gesture_detector_ml")
     show_viz = rospy.get_param("~show_visualization", True)
-
-    # model, scaler, classes, device = load_models()  # ML: CNN model loading
 
     detector = GestureDetectorROS(show_viz=show_viz)
 
