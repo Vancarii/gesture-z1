@@ -1,11 +1,11 @@
 # Z1 Gesture Control - LeapC + ML + MoveIt Pipeline
 
-Control a Unitree Z1 robotic arm using hand gestures detected by an Ultraleap (Leap Motion) controller, classified by a CNN, and executed via MoveIt.
+Control a Unitree Z1 robotic arm using hand pointing gestures detected by an Ultraleap (Leap Motion) controller, and executed via MoveIt.
 
 ## Overview
 
 ```
-LeapC hand tracking -> CNN gesture classification -> action mapping -> MoveIt Cartesian planning -> Z1 arm moves
+LeapC hand tracking -> publish world coordinates -> MoveIt Cartesian planning -> Z1 arm moves
 ```
 
 Everything runs from a single `roslaunch` command.
@@ -14,7 +14,7 @@ Everything runs from a single `roslaunch` command.
 
 - **ROS Noetic** on Ubuntu 20.04
 - **Unitree Z1** arm (for real hardware mode)
-- **Ultraleap Gemini** hand tracking service (`leapd` running)
+- **Ultraleap Gemini** hand tracking service
 - **Anaconda/Miniconda** with the `gesture-env` environment
 
 ## Setup (new machine)
@@ -64,8 +64,8 @@ roslaunch z1_leap_integration real_full.launch
 
 | File | Description |
 |------|-------------|
-| `scripts/detect_point.py` | ROS node - LeapC + CNN gesture classifier. Publishes JSON actions to `/leap/gesture`. Runs inside `gesture-env` via `conda run`. |
-| `scripts/look_at_point.py` | ROS node - subscribes to `/leap/gesture`, transforms velocity to robot frame, executes Cartesian moves via MoveIt. |
+| `scripts/detect_point.py` | ROS node - LeapC. Publishes world coordinates of user point to `/leap/pointing_target`. Runs inside `gesture-env` |
+| `scripts/look_at_point.py` | ROS node - subscribes to `/leap/pointing_target`, transforms velocity to robot frame, executes Cartesian moves via MoveIt. |
 | `config/gesture_config.yaml` | Tuneable parameters: step size, velocity scale, confidence threshold, workspace bounds. |
 | `launch/simulation_full.launch` | Single launch for simulation (Gazebo + gesture pipeline). |
 | `launch/real_full.launch` | Single launch for real Z1 hardware + gesture pipeline. |
