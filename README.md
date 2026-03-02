@@ -1,12 +1,14 @@
-# Z1 Gesture Control - LeapC + ML + MoveIt Pipeline
+# Z1 Gesture Control - LeapC + MoveIt Pipeline
+
+Lawrence Kim, Sarah Jade Pratt, Yecheng Wang, Flora Jin
 
 Control a Unitree Z1 robotic arm using hand pointing gestures detected by an Ultraleap (Leap Motion) controller, and executed via MoveIt.
 
 ## Overview
 
-```
+`
 LeapC hand tracking -> publish world coordinates -> MoveIt Cartesian planning -> Z1 arm moves
-```
+`
 
 Everything runs from a single `roslaunch` command.
 
