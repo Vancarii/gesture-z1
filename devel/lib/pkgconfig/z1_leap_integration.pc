@@ -1,0 +1,8 @@
+prefix=/home/tangentlab/z1_ws/devel
+
+Name: z1_leap_integration
+Description: Description of z1_leap_integration
+Version: 0.0.0
+Cflags: 
+Libs: -L${prefix}/lib 
+Requires: 

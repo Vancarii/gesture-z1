@@ -1,16 +1,6 @@
 <launch>
     <!--
-      Full gesture-to-arm simulation pipeline.
-
-      Lightweight (default):  roslaunch z1_leap_integration simulation_full.launch
-        → MoveIt fake controllers + RViz  (no physics, fast)
-
-      Gazebo:  roslaunch z1_leap_integration simulation_full.launch use_gazebo:=true
-        → Gazebo physics sim + ros_control + MoveIt + RViz
-
-      Gazebo only (no RViz):  roslaunch z1_leap_integration simulation_full.launch use_gazebo:=true rviz:=false
-
-      IMPORTANT: deactivate conda first!   conda deactivate
+      Full gesture-to-arm simulation pipeline
     -->
 
     <!-- ============ Arguments ============ -->
@@ -32,32 +22,44 @@
     <!-- ============ 1b. Gazebo: full physics sim + MoveIt ============ -->
     <include file="$(find z1_bringup)/launch/sim_arm.launch"
              if="$(arg use_gazebo)">
-        <arg name="rviz" value="$(arg rviz)" />
+        <arg name="rviz"             value="$(arg rviz)" />
+        <arg name="UnitreeGripperYN" value="false" />
     </include>
 
     <!-- ============ 2. Config params ============ -->
     <rosparam file="$(find z1_leap_integration)/config/gesture_config.yaml"
               command="load" />
 
-    <!-- ============ 3. Gesture Detector (LeapC + CNN + Brain) ============ -->
+    <!-- Gazebo sim-time runs slower than wall-clock, so MoveIt's default
+         trajectory timeout (1.2× planned duration) fires prematurely.
+         These params MUST be under the move_group/ namespace because
+         trajectory_execution.launch.xml is included with ns="move_group". -->
+    <param name="move_group/trajectory_execution/execution_duration_monitoring" value="false" />
+    <param name="move_group/trajectory_execution/allowed_execution_duration_scaling" value="4.0" />
+    <!-- After an aborted trajectory the arm is still settling — allow
+         up to 0.05 rad mismatch before rejecting the next plan's start. -->
+    <param name="move_group/trajectory_execution/allowed_start_tolerance" value="0.05" />
+
+    <!-- ============ 3. Gesture Detector ============ -->
     <!--
       This script uses the gesture-env conda Python (shebang).
       roslaunch inherits PYTHONPATH so rospy is importable.
     -->
     <node pkg="z1_leap_integration"
-          type="gesture_detector_ml.py"
-          name="gesture_detector_ml"
+          type="detect_point.py"
+          name="detect_point"
           output="screen">
         <param name="show_visualization" value="$(arg show_viz)" />
     </node>
 
-    <!-- ============ 4. MoveIt Gesture Controller ============ -->
+    <!-- ============ 4. Look-at-Point Controller ============ -->
+    <!--
+      Subscribes to /leap/pointing_target published by detect_point.
+      Uses MoveIt to orient the arm so link06 +X points at the target.
+    -->
     <node pkg="z1_leap_integration"
-          type="gesture_moveit_controller.py"
-          name="gesture_moveit_controller"
-          output="screen">
-        <param name="step_scale"      value="0.04" />
-        <param name="velocity_scale"  value="0.3" />
-    </node>
+          type="look_at_point.py"
+          name="look_at_point"
+          output="screen" />
 
 </launch>

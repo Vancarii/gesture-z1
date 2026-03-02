@@ -1,16 +1,9 @@
 #!/usr/bin/env -S /bin/bash -c 'conda run -n gesture-env python "$0" "$@"'
 # -*- coding: utf-8 -*-
 """
-ROS node: gesture_detector_ml
+ROS node: detect_point
 
-Detects hand gestures via Leap Motion + CNN classifier, maps them to
-robot actions, and publishes action commands as JSON on the /leap/gesture
-topic.
-
-This is the ROS-integrated version of Z1-LeapC/src/pointing.py.
-It reuses the same CNN model and scaler.  The gesture-to-velocity
-mapping is a lightweight table that matches the converged PPO policy
-from policy.py, so stable_baselines3/gymnasium are NOT needed.
+Detects hand gestures via Leap Motion, gets and publishes world coordinates
 
 Requires the 'gesture-env' conda environment (Leap SDK, PyTorch, etc.).
 ROS (rospy) is picked up via PYTHONPATH set by roslaunch.
@@ -19,21 +12,12 @@ ROS (rospy) is picked up via PYTHONPATH set by roslaunch.
 import sys
 import os
 import ctypes
-
-# ---------------------------------------------------------------------------
-# GLIBCXX fix: conda's scipy/sklearn/matplotlib need GLIBCXX_3.4.29 but
-# the system libstdc++ only goes to 3.4.28.  Preload conda's own copy.
-# ---------------------------------------------------------------------------
-_CONDA_LIBSTDCPP = os.path.join(
-    sys.prefix, "lib", "libstdc++.so.6"
-)
-if os.path.isfile(_CONDA_LIBSTDCPP):
-    ctypes.CDLL(_CONDA_LIBSTDCPP, mode=ctypes.RTLD_GLOBAL)
+import math
 
 import time
 import json
 import numpy as np
-from collections import deque  # Counter removed (only used by TemporalSmoothening)
+from collections import deque
 
 # ---------------------------------------------------------------------------
 # Path setup
@@ -55,9 +39,7 @@ for _p in [
     if os.path.isdir(_p) and _p not in sys.path:
         sys.path.append(_p)
 
-# ---------------------------------------------------------------------------
-# Imports
-# ---------------------------------------------------------------------------
+
 import rospy
 from std_msgs.msg import String
 
@@ -100,6 +82,16 @@ def _pointing_label(direction):
     return '-'.join(parts) if parts else 'Pointing'
 
 
+def _angle_between_deg(a, b) -> float:
+    """Angle in degrees between two vectors (handles near-zero norms)."""
+    a = np.array(a, dtype=float)
+    b = np.array(b, dtype=float)
+    na, nb = np.linalg.norm(a), np.linalg.norm(b)
+    if na < 1e-9 or nb < 1e-9:
+        return 0.0
+    return math.degrees(math.acos(np.clip(np.dot(a / na, b / nb), -1.0, 1.0)))
+
+
 # ===================================================================
 # Physical setup constants
 # ===================================================================
@@ -115,6 +107,17 @@ LEAP_TO_ARM_OFFSET_MM: np.ndarray = np.array([0.0, 0.0, -ARM_DISTANCE_FROM_LEAP_
 # All pointable objects sit on a sphere of this radius centred on the arm base.
 OBJECT_DISTANCE_M:  float = 5.0                        # 5 metres
 OBJECT_DISTANCE_MM: float = OBJECT_DISTANCE_M * 1000.0  # 5000 mm
+
+# ── Stability / debounce ─────────────────────────────────────────────────
+# /leap/pointing_target is only published when the pointing direction has been
+# stable (no big frame-to-frame jumps, small angular spread) for
+# STABILITY_WINDOW_SEC seconds.  While the hand is moving the topic is silent
+# and the arm holds its last position.
+STABILITY_WINDOW_SEC = 2.0    # seconds the direction must be stable
+STABILITY_MAX_DEG    = 8.0    # max angular spread across the whole window
+MOVEMENT_RESET_DEG   = 20.0   # frame-to-frame jump that clears the window
+RELOCK_ESCAPE_DEG    = 30.0   # hand must move this far from the locked dir
+                               # before a new lock is allowed
 
 # Leap sensor tilt correction
 # The sensor face is tilted 35° upward toward the user from horizontal.
@@ -135,22 +138,21 @@ del _ct, _st
 # CV2 hand visualisation (mirrors pointing.py Canvas)
 # ===================================================================
 class Canvas:
-    """CV2 hand skeleton overlay — matches pointing.py rendering."""
 
     def __init__(self):
-        self.name = "Gesture Detector (ROS)"
+        self.name = "Leap Gesture Detector Visualization"
         self.screen_size = [500, 700]
         self.hands_colour = (255, 255, 255)
         self.font_colour  = (0, 255, 44)
         self.hands_format = "Skeleton"
         self.output_image = np.zeros(
-            (self.screen_size[0], self.screen_size[1], 3), np.uint8
-        )
+            (self.screen_size[0], self.screen_size[1], 3), np.uint8)
         self.predict = "NAN"
         self.tracking_mode = None
         self.current_direction = "No hands detected"
         self.palm_direction_text = ""
         self.target_text = ""
+        self.stability_text = ""
 
     def get_joint_position(self, bone):
         if bone is None:
@@ -181,6 +183,14 @@ class Canvas:
             self.output_image, self.target_text,
             (10, 115), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 200, 255), 1,
         )
+
+        # --- Stability status ---
+        if self.stability_text:
+            colour = (0, 255, 0) if self.stability_text.startswith("LOCKED") else (0, 165, 255)
+            cv2.putText(
+                self.output_image, self.stability_text,
+                (10, 140), cv2.FONT_HERSHEY_SIMPLEX, 0.6, colour, 2,
+            )
 
         # --- Tracking mode ---
         _TRACKING_NAMES = {
@@ -291,7 +301,99 @@ class GestureDetectorROS(leap.Listener):
         if self.show_viz:
             self.canvas = Canvas()
 
+        # Stability tracking — controls when /leap/pointing_target is published
+        self._dir_history    = deque()   # (timestamp_sec, unit_dir_np)
+        self._stable_since   = None      # time.time() when current stable run began
+        self._stable_locked  = False     # True once published for this stable period
+        self._last_locked_dir = None     # direction at the time of last publish
+
         rospy.loginfo("GestureDetectorROS initialised")
+
+    # ---- Stability / debounce ----------------------------------------
+    def _check_stability(self, dir_now, target_m) -> str:
+        """
+        Track pointing direction history and publish /leap/pointing_target
+        the first time the direction has been stable for STABILITY_WINDOW_SEC.
+
+        Uses _stable_since (set when the first frame of a new stable run
+        arrives) rather than the deque head after pruning — the pruning
+        removes entries older than the window, which made the computed
+        window_dur always < STABILITY_WINDOW_SEC (the previous bug).
+        """
+        now = time.time()
+        dir_now = np.array(dir_now, dtype=float)
+
+        # If we are currently locked, require the hand to escape far enough
+        # before clearing the lock and starting a new stability window.
+        # This prevents small wobbles after a lock from immediately re-triggering.
+        if self._stable_locked and self._last_locked_dir is not None:
+            escape_angle = _angle_between_deg(dir_now, self._last_locked_dir)
+            if escape_angle < RELOCK_ESCAPE_DEG:
+                # Still inside the escape radius — stay locked, ignore movement
+                return "LOCKED (holding)"
+            else:
+                # Hand has genuinely moved away — allow a new lock
+                self._stable_locked   = False
+                self._last_locked_dir = None
+                self._dir_history.clear()
+                self._stable_since    = None
+
+        # Frame-to-frame angular jump → reset the window
+        if self._dir_history:
+            jump = _angle_between_deg(dir_now, self._dir_history[-1][1])
+            if jump > MOVEMENT_RESET_DEG:
+                self._dir_history.clear()
+                self._stable_since  = None
+                self._stable_locked = False
+
+        # Mark the start of a new stable run on the very first frame
+        if not self._dir_history:
+            self._stable_since = now
+
+        self._dir_history.append((now, dir_now))
+
+        # Prune entries older than the window (keeps spread calc snappy)
+        while self._dir_history and (now - self._dir_history[0][0]) > STABILITY_WINDOW_SEC:
+            self._dir_history.popleft()
+
+        # How long has this uninterrupted stable run been going?
+        run_dur = (now - self._stable_since) if self._stable_since is not None else 0.0
+
+        if run_dur < STABILITY_WINDOW_SEC:
+            self._stable_locked = False
+            return f"Stabilizing: {run_dur:.1f}/{STABILITY_WINDOW_SEC:.0f}s"
+
+        # Window filled — check angular spread across the kept frames
+        if not self._dir_history:
+            return "Stabilizing: bad data"
+        dirs = np.array([d for _, d in self._dir_history])
+        mean_dir = dirs.mean(axis=0)
+        norm_val = np.linalg.norm(mean_dir)
+        if norm_val < 1e-9:
+            return "Stabilizing: bad data"
+        mean_dir /= norm_val
+        max_spread = max(_angle_between_deg(d, mean_dir) for d in dirs)
+
+        if max_spread > STABILITY_MAX_DEG:
+            self._stable_locked = False
+            return f"Moving (spread {max_spread:.1f}\u00b0)"
+
+        # Stable — publish once per stable period
+        if not self._stable_locked:
+            self._stable_locked   = True
+            self._last_locked_dir = dir_now.copy()
+            self.target_pub.publish(json.dumps({
+                "target_pos_m": list(target_m),
+                "frame":        "arm_base",
+            }))
+            rospy.loginfo(
+                "Stable %.1fs, spread %.1f\u00b0 \u2192 publishing target [%s] m",
+                run_dur, max_spread,
+                ", ".join(f"{v:.3f}" for v in target_m),
+            )
+            return "LOCKED \u2713"
+
+        return "LOCKED (holding)"
 
     # ---- Pointing target computation ---------------------------------
     def _compute_target_point(self, tip_mm, direction):
@@ -357,6 +459,12 @@ class GestureDetectorROS(leap.Listener):
                         self.current_point_tip, self.current_point_dir
                     )
 
+                    # Stability check — publishes /leap/pointing_target only
+                    # when the direction has been stable for STABILITY_WINDOW_SEC.
+                    stability_status = self._check_stability(
+                        self.current_point_dir, self.current_target_m
+                    )
+
                     if self.show_viz:
                         self.canvas.current_direction = _pointing_label(self.current_point_dir)
                         self.canvas.palm_direction_text = (
@@ -368,25 +476,20 @@ class GestureDetectorROS(leap.Listener):
                             f"{self.current_point_dir[2]:+.2f}]"
                         )
                         tgt = self.current_target_m
-                        dist = float(np.linalg.norm(tgt))  # should always be ~5.0 m
+                        dist = float(np.linalg.norm(tgt))
                         self.canvas.target_text = (
                             f"Target: [{tgt[0]:+.3f}, {tgt[1]:+.3f}, {tgt[2]:+.3f}] m"
                             f"  |d|={dist:.3f}m"
                         )
+                        self.canvas.stability_text = stability_status
 
-                    # Publish full pointing data on /leap/gesture
-                    msg = json.dumps({
+                    # /leap/gesture published every frame (full debug data)
+                    self.pub.publish(json.dumps({
                         "tip_pos":      self.current_point_tip,
                         "direction":    self.current_point_dir,
                         "target_pos_m": self.current_target_m,
-                    })
-                    self.pub.publish(msg)
-
-                    # Also publish target coordinates alone on /leap/pointing_target
-                    self.target_pub.publish(json.dumps({
-                        "target_pos_m": self.current_target_m,   # [x, y, z] metres, arm base frame
-                        "frame":        "arm_base",
                     }))
+                    # /leap/pointing_target is published inside _check_stability
             except Exception as e:
                 rospy.logwarn_throttle(5.0, "Pointing detect error: %s", e)
 
@@ -394,15 +497,22 @@ class GestureDetectorROS(leap.Listener):
             self.current_point_tip = None
             self.current_point_dir = None
             self.current_target_m  = None
+            # Clear timing/history so a fresh 2-second window is required when
+            # the hand returns, but keep _stable_locked and _last_locked_dir.
+            # This means re-locking on the same direction (or the exit trajectory)
+            # is blocked until the hand intentionally moves 30° away.
+            self._dir_history.clear()
+            self._stable_since = None
             if self.show_viz:
                 self.canvas.current_direction = "No hands detected"
                 self.canvas.target_text = ""
+                self.canvas.stability_text = ""
 
 # ===================================================================
 # Entry point
 # ===================================================================
 def main():
-    rospy.init_node("gesture_detector_ml")
+    rospy.init_node("detect_point")
     show_viz = rospy.get_param("~show_visualization", True)
 
     detector = GestureDetectorROS(show_viz=show_viz)

@@ -3,7 +3,7 @@
 # Loaded by simulation_full.launch / real_full.launch
 # ================================================================
 
-# --- gesture_detector_ml params ---
+# --- detect_point params ---
 gesture_detector:
   # Show the CV2 hand skeleton + prediction overlay window.
   # Set to false for headless / SSH operation.

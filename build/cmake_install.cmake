@@ -151,7 +151,7 @@ endif()
 if(NOT CMAKE_INSTALL_LOCAL_ONLY)
   # Include the install script for each subdirectory.
   include("/home/tangentlab/z1_ws/build/gtest/cmake_install.cmake")
-  include("/home/tangentlab/z1_ws/build/z1_sdk/cmake_install.cmake")
+  include("/home/tangentlab/z1_ws/build/z1_leap_integration/cmake_install.cmake")
 
 endif()
 

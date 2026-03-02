@@ -16,16 +16,11 @@ z1_joint_traj_controller:
   action_monitor_rate: 200
 
   constraints:
-    goal_time: 0.5
-    joint1:
-      goal: 0.01
-    joint2:
-      goal: 0.01
-    joint3:
-      goal: 0.01
-    joint4:
-      goal: 0.01
-    joint5:
-      goal: 0.01
-    joint6:
-      goal: 0.01
+    goal_time: 5.0
+    stopped_velocity_tolerance: 0.1
+    joint1: { goal: 0.1 }
+    joint2: { goal: 0.1 }
+    joint3: { goal: 0.1 }
+    joint4: { goal: 0.1 }
+    joint5: { goal: 0.1 }
+    joint6: { goal: 0.1 }

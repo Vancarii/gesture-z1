@@ -81,7 +81,7 @@ CATKIN_SKIP_TESTING:BOOL=OFF
 CATKIN_SYMLINK_INSTALL:BOOL=OFF
 
 //List of ';' separated packages to build
-CATKIN_WHITELIST_PACKAGES:STRING=z1_sdk
+CATKIN_WHITELIST_PACKAGES:STRING=z1_leap_integration
 
 //Path to a file.
 CCD_INCLUDE_DIRS:PATH=/usr/include
@@ -1073,7 +1073,7 @@ laikago_description_IS_TOP_LEVEL:STATIC=OFF
 laikago_description_SOURCE_DIR:STATIC=/home/tangentlab/z1_ws/src/unitree_ros/robots/laikago_description
 
 //Path to a library.
-lib:FILEPATH=/opt/ros/noetic/lib/libactionlib.so
+lib:FILEPATH=/opt/ros/noetic/lib/librostime.so
 
 //The directory containing a CMake configuration file for message_filters.
 message_filters_DIR:PATH=/opt/ros/noetic/share/message_filters/cmake
@@ -1083,6 +1083,9 @@ message_generation_DIR:PATH=/opt/ros/noetic/share/message_generation/cmake
 
 //The directory containing a CMake configuration file for message_runtime.
 message_runtime_DIR:PATH=/opt/ros/noetic/share/message_runtime/cmake
+
+//The directory containing a CMake configuration file for moveit_commander.
+moveit_commander_DIR:PATH=/opt/ros/noetic/share/moveit_commander/cmake
 
 //The directory containing a CMake configuration file for moveit_core.
 moveit_core_DIR:PATH=/opt/ros/noetic/share/moveit_core/cmake
@@ -1439,6 +1442,15 @@ z1_hw_IS_TOP_LEVEL:STATIC=OFF
 z1_hw_SOURCE_DIR:STATIC=/home/tangentlab/z1_ws/src/z1_hw
 
 //Value Computed by CMake
+z1_leap_integration_BINARY_DIR:STATIC=/home/tangentlab/z1_ws/build/z1_leap_integration
+
+//Value Computed by CMake
+z1_leap_integration_IS_TOP_LEVEL:STATIC=OFF
+
+//Value Computed by CMake
+z1_leap_integration_SOURCE_DIR:STATIC=/home/tangentlab/z1_ws/src/z1_leap_integration
+
+//Value Computed by CMake
 z1_moveit_config_BINARY_DIR:STATIC=/home/tangentlab/z1_ws/build/z1_moveit_config
 
 //Value Computed by CMake
@@ -1758,7 +1770,7 @@ FIND_PACKAGE_MESSAGE_DETAILS_PkgConfig:INTERNAL=[/usr/bin/pkg-config][v0.29.1()]
 //Details about finding Protobuf
 FIND_PACKAGE_MESSAGE_DETAILS_Protobuf:INTERNAL=[/usr/lib/x86_64-linux-gnu/libprotobuf.so;-lpthread][/usr/include][v3.6.1(3)]
 //Details about finding PythonInterp
-FIND_PACKAGE_MESSAGE_DETAILS_PythonInterp:INTERNAL=[/usr/bin/python3][v3.8.10(3)]
+FIND_PACKAGE_MESSAGE_DETAILS_PythonInterp:INTERNAL=[/usr/bin/python3][v3.8.10()]
 //Details about finding Threads
 FIND_PACKAGE_MESSAGE_DETAILS_Threads:INTERNAL=[TRUE][v()]
 //Details about finding UUID
