@@ -58,6 +58,12 @@ PLANNING_TIME = 10.0
 MAX_VELOCITY = 0.6    # base velocity — scaled down for large moves
 MAX_ACCEL = 0.3
 
+# Hard timeout for group.execute().  On real hardware the trajectory controller
+# can accept a goal but never send a terminal result (stuck ACTIVE state), which
+# blocks group.execute(wait=True) forever.  This timeout cancels the goal and
+# recovers the worker thread so subsequent gestures keep working.
+EXECUTE_TIMEOUT_SEC = 30.0
+
 MAX_RETRIES = 2
 
 # Settle time after a motion before accepting the next target.
@@ -193,14 +199,44 @@ def _make_joint6_constraint(group) -> Constraints:
 
 
 def _execute_and_check(group, plan) -> bool:
-    """Execute a plan and return True only if the controller confirms success."""
-    result = group.execute(plan, wait=True)
+    """
+    Execute a plan and return True only if the controller confirms success.
+    Run execute() in a daemon thread. If it hasn't finished within
+    EXECUTE_TIMEOUT_SEC, call group.stop() to cancel the goal
+    """
+    result_holder = [None]
+
+    def _run():
+        result_holder[0] = group.execute(plan, wait=True)
+
+    t = threading.Thread(target=_run, daemon=True)
+    t.start()
+    t.join(timeout=EXECUTE_TIMEOUT_SEC)
+
+    if t.is_alive():
+        rospy.logerr(
+            "group.execute() timed out after %.0fs — ",
+            EXECUTE_TIMEOUT_SEC,
+        )
+        try:
+             # cancels the action goal
+            group.stop()
+        except Exception:
+            pass
+        
+        # wait for _run() to actually return
+        t.join(timeout=5.0)
+        group.clear_pose_targets()
+        group.clear_path_constraints()
+        return False
+
     group.stop()
     group.clear_pose_targets()
     group.clear_path_constraints()
+    result = result_holder[0]
     if not result:
         rospy.logerr("group.execute() returned False — controller rejected trajectory.")
-    return result
+    return bool(result)
 
 
 def plan_orientation_only(group, quat_xyzw: np.ndarray) -> bool:
