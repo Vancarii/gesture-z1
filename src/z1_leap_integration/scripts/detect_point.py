@@ -41,7 +41,7 @@ for _p in [
 
 
 import rospy
-from std_msgs.msg import String
+from std_msgs.msg import String, Bool
 
 import leap
 import cv2
@@ -113,7 +113,7 @@ OBJECT_DISTANCE_MM: float = OBJECT_DISTANCE_M * 1000.0  # 5000 mm
 # stable (no big frame-to-frame jumps, small angular spread) for
 # STABILITY_WINDOW_SEC seconds.  While the hand is moving the topic is silent
 # and the arm holds its last position.
-STABILITY_WINDOW_SEC = 2.0    # seconds the direction must be stable
+STABILITY_WINDOW_SEC = 1.0    # seconds the direction must be stable
 STABILITY_MAX_DEG    = 8.0    # max angular spread across the whole window
 MOVEMENT_RESET_DEG   = 20.0   # frame-to-frame jump that clears the window
 RELOCK_ESCAPE_DEG    = 30.0   # hand must move this far from the locked dir
@@ -290,6 +290,7 @@ class GestureDetectorROS(leap.Listener):
         # ROS publishers
         self.pub        = rospy.Publisher("/leap/gesture",          String, queue_size=10)
         self.target_pub = rospy.Publisher("/leap/pointing_target", String, queue_size=10)
+        self.home_pub   = rospy.Publisher("/leap/home",            Bool,   queue_size=1)
 
         # Continuous pointing: fingertip world position + normalised direction vector
         self.current_point_tip = None   # [x, y, z] mm in Leap world space
@@ -306,6 +307,13 @@ class GestureDetectorROS(leap.Listener):
         self._stable_since   = None      # time.time() when current stable run began
         self._stable_locked  = False     # True once published for this stable period
         self._last_locked_dir = None     # direction at the time of last publish
+
+        # Two-hand homing debounce
+        # /leap/home is published once the user holds both hands in view for
+        # TWO_HAND_HOME_SEC seconds.  The trigger resets when hands drop below 2.
+        self._two_hand_start   = None   # time.time() when 2-hand window began
+        self._home_triggered   = False  # True once published for this 2-hand window
+        self.TWO_HAND_HOME_SEC = 1.0
 
         rospy.loginfo("GestureDetectorROS initialised")
 
@@ -437,7 +445,38 @@ class GestureDetectorROS(leap.Listener):
         if self.show_viz:
             self.canvas.render_hands(event)
 
-        if len(event.hands) == 1:
+        num_hands = len(event.hands)
+
+        # ── Two-hand homing detection ─────────────────────────────────────
+        if num_hands == 2:
+            now = time.time()
+            if self._two_hand_start is None:
+                self._two_hand_start = now
+                self._home_triggered = False
+            elif not self._home_triggered:
+                held_for = now - self._two_hand_start
+                if held_for >= self.TWO_HAND_HOME_SEC:
+                    self.home_pub.publish(Bool(data=True))
+                    self._home_triggered = True
+                    rospy.loginfo(
+                        "Two hands held for %.1fs — publishing /leap/home", held_for
+                    )
+                    if self.show_viz:
+                        self.canvas.stability_text = "HOMING ✓"
+                else:
+                    if self.show_viz:
+                        self.canvas.stability_text = (
+                            f"Homing: {held_for:.1f}/{self.TWO_HAND_HOME_SEC:.0f}s"
+                        )
+            else:
+                if self.show_viz:
+                    self.canvas.stability_text = "HOMING (holding)"
+        else:
+            # Reset 2-hand state whenever we don't have exactly 2 hands
+            self._two_hand_start = None
+            self._home_triggered = False
+
+        if num_hands == 1:
             hand = event.hands[0]
 
             # --- Continuous pointing: fingertip position + direction vector ---
@@ -493,7 +532,7 @@ class GestureDetectorROS(leap.Listener):
             except Exception as e:
                 rospy.logwarn_throttle(5.0, "Pointing detect error: %s", e)
 
-        else:
+        if num_hands != 1:
             self.current_point_tip = None
             self.current_point_dir = None
             self.current_target_m  = None
@@ -503,7 +542,7 @@ class GestureDetectorROS(leap.Listener):
             # is blocked until the hand intentionally moves 30° away.
             self._dir_history.clear()
             self._stable_since = None
-            if self.show_viz:
+            if self.show_viz and num_hands == 0:
                 self.canvas.current_direction = "No hands detected"
                 self.canvas.target_text = ""
                 self.canvas.stability_text = ""

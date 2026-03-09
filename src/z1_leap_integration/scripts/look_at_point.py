@@ -1,7 +1,5 @@
 #!/usr/bin/env python3
 """
-look_at_point.py  (v5 — ROS subscriber / continuous mode)
-----------------------------------------------------------
 Subscribes to /leap/pointing_target published by detect_point.py and
 continuously drives the Z1 arm to point at whatever 3D coordinate the
 Leap Motion detects.
@@ -9,14 +7,6 @@ Leap Motion detects.
 Topic consumed:
     /leap/pointing_target  (std_msgs/String, JSON)
     {"target_pos_m": [x, y, z], "frame": "arm_base"}
-
-Pipeline:
-    detect_point  →  /leap/pointing_target  →  look_at_point  →  MoveIt
-
-Run:
-    roslaunch z1_leap_integration simulation_full.launch
-
-(gesture_moveit_controller is no longer needed — this node replaces it.)
 """
 
 import sys
@@ -29,7 +19,7 @@ import rospy
 import moveit_commander
 from geometry_msgs.msg import Pose, Quaternion
 from moveit_msgs.msg import Constraints, JointConstraint
-from std_msgs.msg import String
+from std_msgs.msg import String, Bool
 from sensor_msgs.msg import JointState
 from tf.transformations import (
     quaternion_from_matrix,
@@ -64,11 +54,11 @@ CLOSE_ENOUGH_DEG = 12.0
 # unreachable and cause planner failures.
 MIN_ELEVATION_DEG = -30.0
 
-PLANNING_TIME   = 10.0
-MAX_VELOCITY    = 0.3    # base velocity — scaled down for large moves
-MAX_ACCEL       = 0.3
+PLANNING_TIME = 10.0
+MAX_VELOCITY = 0.6    # base velocity — scaled down for large moves
+MAX_ACCEL = 0.3
 
-MAX_RETRIES     = 2      # retry once on CONTROL_FAILED before giving up
+MAX_RETRIES = 2
 
 # Settle time after a motion before accepting the next target.
 MIN_REPLAN_INTERVAL = 1.0
@@ -193,8 +183,8 @@ def _make_joint6_constraint(group) -> Constraints:
     jc = JointConstraint()
     jc.joint_name      = j6_name
     jc.position        = j6_val
-    jc.tolerance_above = 0.5   # ±0.5 rad (~28°) wrist drift allowed
-    jc.tolerance_below = 0.5
+    jc.tolerance_above = 0.1   # ±0.5 rad (~28°) wrist drift allowed
+    jc.tolerance_below = 0.1
     jc.weight          = 1.0
 
     c = Constraints()
@@ -351,15 +341,20 @@ class LookAtPointNode:
         )
 
         # ── Shared state (lock-protected) ─────────────────────────────────
-        self._lock                 = threading.Lock()
-        self._pending_target       = None   # latest np.ndarray from subscriber
-        self._busy                 = False  # True while a motion is executing
+        self._lock = threading.Lock()
+        self._pending_target = None   # latest np.ndarray from subscriber
+        self._pending_home   = False  # True when /leap/home has been received
+        self._busy = False  # True while a motion is executing
         self._consecutive_failures = 0      # full-failure count for thermal backoff
 
-        # ── ROS subscriber ────────────────────────────────────────────────
+        # ── ROS subscribers ────────────────────────────────────────
         rospy.Subscriber(
             "/leap/pointing_target", String,
             self._target_cb, queue_size=1
+        )
+        rospy.Subscriber(
+            "/leap/home", Bool,
+            self._home_cb, queue_size=1
         )
 
         # ── Worker thread (owns all MoveIt calls) ─────────────────────────
@@ -368,7 +363,16 @@ class LookAtPointNode:
 
         rospy.loginfo("[look_at_point] Ready — subscribed to /leap/pointing_target")
 
-    # ── Subscriber callback ───────────────────────────────────────────────
+    # ── Subscriber callbacks ────────────────────────────────────
+
+    def _home_cb(self, msg: Bool):
+        """Preempt any pending pointing target and request a home motion."""
+        if not msg.data:
+            return
+        rospy.loginfo("[look_at_point] /leap/home received — queuing home motion.")
+        with self._lock:
+            self._pending_home   = True
+            self._pending_target = None   # discard any queued pointing target
 
     def _target_cb(self, msg: String):
         """
@@ -408,14 +412,34 @@ class LookAtPointNode:
 
         rate = rospy.Rate(10)
         while not rospy.is_shutdown():
-            target = None
+            target      = None
+            do_home     = False
             with self._lock:
-                if not self._busy and self._pending_target is not None:
-                    target               = self._pending_target
-                    self._pending_target = None
-                    self._busy           = True
+                if not self._busy:
+                    if self._pending_home:
+                        do_home            = True
+                        self._pending_home = False
+                        self._busy         = True
+                    elif self._pending_target is not None:
+                        target               = self._pending_target
+                        self._pending_target = None
+                        self._busy           = True
 
-            if target is not None:
+            if do_home:
+                try:
+                    success = self._do_home()
+                    if success:
+                        self._consecutive_failures = 0
+                    else:
+                        self._consecutive_failures += 1
+                except Exception as e:
+                    rospy.logerr("_do_home raised: %s", e)
+                finally:
+                    rospy.sleep(MIN_REPLAN_INTERVAL)
+                    with self._lock:
+                        self._busy = False
+
+            elif target is not None:
                 try:
                     success = self._point_at(target)
                     if success:
@@ -440,7 +464,32 @@ class LookAtPointNode:
             rate.sleep()
 
     # ── Core pointing logic ───────────────────────────────────────────────
-
+    def _do_home(self) -> bool:
+        """
+        Move the arm to the named 'home' position defined in the SRDF
+        (all joints near zero).  Called from the worker thread.
+        """
+        rospy.loginfo("[look_at_point] Homing — moving to 'home' named target.")
+        for attempt in range(1, MAX_RETRIES + 1):
+            _prepare_group(self.group)
+            self.group.set_planning_time(PLANNING_TIME)
+            self.group.set_named_target("home")
+            plan_ok, plan, t, err = self.group.plan()
+            self.group.clear_pose_targets()
+            if not plan_ok:
+                rospy.logwarn(
+                    "Homing: planning failed (err %s, %.2fs), attempt %d/%d.",
+                    err.val, t, attempt, MAX_RETRIES,
+                )
+                continue
+            rospy.loginfo("Homing: plan found in %.2fs — executing.", t)
+            if _execute_and_check(self.group, plan):
+                rospy.loginfo("Homing SUCCESS.")
+                return True
+            rospy.logwarn("Homing: execution failed on attempt %d.", attempt)
+            rospy.sleep(0.3)
+        rospy.logerr("Homing: all attempts exhausted.")
+        return False
     def _point_at(self, target_point: np.ndarray):
         """
         Orient the arm so EEF_POINT_AXIS (+X of link06) points at target_point.
@@ -511,12 +560,12 @@ class LookAtPointNode:
 
         # Scale velocity based on angular distance — big moves go slower
         # to give the Gazebo controller time to track without timeout.
-        if angle_err > 60:
-            scale = 0.15
-        elif angle_err > 30:
-            scale = 0.25
-        else:
-            scale = MAX_VELOCITY
+        # if angle_err > 60:
+        #     scale = 0.60
+        # elif angle_err > 30:
+        #     scale = 0.60
+        # else:
+        scale = MAX_VELOCITY
         self.group.set_max_velocity_scaling_factor(scale)
         self.group.set_max_acceleration_scaling_factor(scale)
         rospy.loginfo(f"  Velocity scale: {scale} (angle_err={angle_err:.0f}\u00b0)")

@@ -31,9 +31,7 @@
               command="load" />
 
     <!-- Gazebo sim-time runs slower than wall-clock, so MoveIt's default
-         trajectory timeout (1.2× planned duration) fires prematurely.
-         These params MUST be under the move_group/ namespace because
-         trajectory_execution.launch.xml is included with ns="move_group". -->
+         trajectory timeout (1.2× planned duration) fires prematurely -->
     <param name="move_group/trajectory_execution/execution_duration_monitoring" value="false" />
     <param name="move_group/trajectory_execution/allowed_execution_duration_scaling" value="4.0" />
     <!-- After an aborted trajectory the arm is still settling — allow
@@ -41,10 +39,6 @@
     <param name="move_group/trajectory_execution/allowed_start_tolerance" value="0.05" />
 
     <!-- ============ 3. Gesture Detector ============ -->
-    <!--
-      This script uses the gesture-env conda Python (shebang).
-      roslaunch inherits PYTHONPATH so rospy is importable.
-    -->
     <node pkg="z1_leap_integration"
           type="detect_point.py"
           name="detect_point"
@@ -53,10 +47,6 @@
     </node>
 
     <!-- ============ 4. Look-at-Point Controller ============ -->
-    <!--
-      Subscribes to /leap/pointing_target published by detect_point.
-      Uses MoveIt to orient the arm so link06 +X points at the target.
-    -->
     <node pkg="z1_leap_integration"
           type="look_at_point.py"
           name="look_at_point"

@@ -9,7 +9,7 @@ gesture_detector:
   # Set to false for headless / SSH operation.
   show_visualization: true
 
-# --- gesture_moveit_controller params ---
+# --- look_at_point params ---
 gesture_moveit:
   # Size of each Cartesian step in metres.
   step_scale: 0.04
