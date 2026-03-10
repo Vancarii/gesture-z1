@@ -49,9 +49,8 @@ ALREADY_POINTING_THRESHOLD_DEG = 3.0
 CLOSE_ENOUGH_DEG = 12.0
 
 # Reject targets pointing below this elevation angle (degrees below horizontal).
-# The Z1 can tilt slightly downward, but steeply underground targets are
-# unreachable and cause planner failures.
-MIN_ELEVATION_DEG = -30.0
+# Disabled — the ground plane and frame in the MoveIt scene handle this now.
+# MIN_ELEVATION_DEG = -30.0
 
 PLANNING_TIME = 10.0
 MAX_VELOCITY = 0.6    # base velocity — scaled down for large moves
@@ -501,14 +500,15 @@ class LookAtPointNode:
 
         target_dir = target_point / dist
 
-        # Reject targets below the minimum elevation angle
-        elevation_deg = math.degrees(math.asin(np.clip(target_dir[2], -1.0, 1.0)))
-        if elevation_deg < MIN_ELEVATION_DEG:
-            rospy.logwarn(
-                f"Target elevation {elevation_deg:.1f}° is below minimum "
-                f"{MIN_ELEVATION_DEG}° — ignoring (pointing underground)."
-            )
-            return True
+        # Elevation pre-filter disabled — scene collision objects (ground plane,
+        # frame) now prevent the planner from accepting underground trajectories.
+        # elevation_deg = math.degrees(math.asin(np.clip(target_dir[2], -1.0, 1.0)))
+        # if elevation_deg < MIN_ELEVATION_DEG:
+        #     rospy.logwarn(
+        #         f"Target elevation {elevation_deg:.1f}° is below minimum "
+        #         f"{MIN_ELEVATION_DEG}° — ignoring (pointing underground)."
+        #     )
+        #     return True
 
         angle_err = angle_between_deg(cur_pointing, target_dir)
 
