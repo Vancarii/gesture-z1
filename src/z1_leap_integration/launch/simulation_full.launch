@@ -38,7 +38,13 @@
          up to 0.05 rad mismatch before rejecting the next plan's start. -->
     <param name="move_group/trajectory_execution/allowed_start_tolerance" value="0.05" />
 
-    <!-- ============ 3. Gesture Detector ============ -->
+    <!-- ============ 3. Scene Collision Objects ============ -->
+    <node pkg="z1_leap_integration"
+          type="scene_publisher.py"
+          name="scene_publisher"
+          output="screen" />
+
+    <!-- ============ 4. Gesture Detector ============ -->
     <node pkg="z1_leap_integration"
           type="detect_point.py"
           name="detect_point"
@@ -46,7 +52,7 @@
         <param name="show_visualization" value="$(arg show_viz)" />
     </node>
 
-    <!-- ============ 4. Look-at-Point Controller ============ -->
+    <!-- ============ 5. Look-at-Point Controller ============ -->
     <node pkg="z1_leap_integration"
           type="look_at_point.py"
           name="look_at_point"

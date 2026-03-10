@@ -3,13 +3,12 @@
 # Loaded by simulation_full.launch / real_full.launch
 # ================================================================
 
-# --- detect_point params ---
+# detect_point params
 gesture_detector:
-  # Show the CV2 hand skeleton + prediction overlay window.
-  # Set to false for headless / SSH operation.
+  # Show the CV2 hand visualizer
   show_visualization: true
 
-# --- look_at_point params ---
+# look_at_point params
 gesture_moveit:
   # Size of each Cartesian step in metres.
   step_scale: 0.04
@@ -33,3 +32,50 @@ gesture_moveit:
     x: [-0.5, 0.5]
     y: [-0.5, 0.5]
     z: [0.05, 0.6]
+
+
+# Scene collision objects (loaded by scene_publisher.py)
+# All dimensions in metres.
+scene_publisher:
+  collision_objects:
+
+    # Mounting plate — arm is 3" forward of frame centre, so frame is offset -0.0762 m in X
+    - name: mounting_plate
+      size: [0.508, 0.508, 0.0254]
+      position: [-0.0762, 0.0, 0.5207]
+
+    # Frame posts (4 corners)
+    - name: frame_post_front_left
+      size: [0.0254, 0.0254, 0.508]
+      position: [ 0.1651,  0.2413, 0.2540]
+
+    - name: frame_post_front_right
+      size: [0.0254, 0.0254, 0.508]
+      position: [ 0.1651, -0.2413, 0.2540]
+
+    - name: frame_post_rear_left
+      size: [0.0254, 0.0254, 0.508]
+      position: [-0.3175,  0.2413, 0.2540]
+
+    - name: frame_post_rear_right
+      size: [0.0254, 0.0254, 0.508]
+      position: [-0.3175, -0.2413, 0.2540]
+
+    # Ground plane — top face at z=0, aligned with the RViz grid
+    - name: ground
+      size: [5.0, 5.0, 0.02]
+      position: [0.0, 0.0, -0.01]
+
+  # Allowed-collision overrides
+  allowed_collisions:
+    - [link00, mounting_plate]
+
+  # Objects attached to moving robot links
+  attached_objects:
+    # Speaker mounted where the gripper was (link06, +X axis)
+    #   size:  [depth=45 mm, length=6.75", height=70 mm]
+    - name: speaker
+      link: link06
+      size: [0.045, 0.17145, 0.07]
+      position: [0.0735, 0.0, 0.035]
+      touch_links: [link06]
