@@ -119,12 +119,6 @@ MOVEMENT_RESET_DEG   = 20.0   # frame-to-frame jump that clears the window
 RELOCK_ESCAPE_DEG    = 30.0   # hand must move this far from the locked dir
                                # before a new lock is allowed
 
-# EMA smoothing applied to the raw direction vector each frame.
-# Reduces high-frequency tracking jitter, especially at longer range where
-# joint position noise is larger relative to the bone length used.
-# Range 0–1: lower = more smoothing but more lag on intentional moves.
-DIR_SMOOTH_ALPHA: float = 0.35
-
 # Leap sensor tilt correction
 # The sensor face is tilted upward toward the user from horizontal.
 # etc/ultraleap/hand_tracker_config.json specifies 15 degree tilt around the X axis, so we apply the same to get 30
@@ -314,7 +308,6 @@ class GestureDetectorROS(leap.Listener):
         self._stable_since   = None      # time.time() when current stable run began
         self._stable_locked  = False     # True once published for this stable period
         self._last_locked_dir = None     # direction at the time of last publish
-        self._smoothed_dir    = None     # EMA-filtered direction (numpy array)
 
         # Two-hand homing debounce
         # /leap/home is published once the user holds both hands in view for
@@ -488,39 +481,17 @@ class GestureDetectorROS(leap.Listener):
             hand = event.hands[0]
 
             # --- Continuous pointing: fingertip position + direction vector ---
-            # Use the full index finger from MCP (knuckle, bones[1].prev_joint)
-            # to fingertip (bones[3].next_joint) as the direction baseline.
-            # This ~70mm span is ~4× longer than the distal phalanx alone, so
-            # small per-joint tracking errors produce ~4× less angular noise.
-            # Using only the distal bone (~15mm) caused "right-forward" to
-            # appear as "down" due to natural wrist pronation amplified by noise.
+            # digits[1] = index finger, bones[3] = distal (fingertip) bone.
             try:
-                finger    = hand.digits[1]
-                tip       = np.array([finger.bones[3].next_joint.x,
-                                      finger.bones[3].next_joint.y,
-                                      finger.bones[3].next_joint.z])
-                base      = np.array([finger.bones[1].prev_joint.x,
-                                      finger.bones[1].prev_joint.y,
-                                      finger.bones[1].prev_joint.z])
+                d_bone = hand.digits[1].bones[3]
+                tip  = np.array([d_bone.next_joint.x, d_bone.next_joint.y, d_bone.next_joint.z])
+                base = np.array([d_bone.prev_joint.x, d_bone.prev_joint.y, d_bone.prev_joint.z])
                 diff = tip - base
                 norm = np.linalg.norm(diff)
                 if norm > 1e-6:
-                    # Convert from Leap device frame to world frame (tilt correction)
+                    # Convert from Leap device frame to world frame (45° tilt correction)
                     tip_world = LEAP_TILT_R @ tip
-                    dir_raw   = LEAP_TILT_R @ (diff / norm)
-
-                    # EMA low-pass filter on direction. Blending normalised vectors
-                    # and re-normalising is equivalent to SLERP for small steps.
-                    # Smooths out per-frame jitter without lagging on steady holds.
-                    if self._smoothed_dir is None:
-                        self._smoothed_dir = dir_raw.copy()
-                    else:
-                        blended = ((1.0 - DIR_SMOOTH_ALPHA) * self._smoothed_dir
-                                   + DIR_SMOOTH_ALPHA * dir_raw)
-                        n = np.linalg.norm(blended)
-                        self._smoothed_dir = blended / n if n > 1e-9 else dir_raw.copy()
-
-                    dir_world = self._smoothed_dir
+                    dir_world  = LEAP_TILT_R @ (diff / norm)
                     self.current_point_tip = tip_world.tolist()    # fingertip world pos (mm)
                     self.current_point_dir = dir_world.tolist()    # unit direction (world frame)
                     # Compute where the pointing ray hits the object sphere
@@ -566,7 +537,6 @@ class GestureDetectorROS(leap.Listener):
             self.current_point_tip = None
             self.current_point_dir = None
             self.current_target_m  = None
-            self._smoothed_dir     = None   # reset EMA when hand leaves frame
             # Clear timing/history so a fresh 2-second window is required when
             # the hand returns, but keep _stable_locked and _last_locked_dir.
             # This means re-locking on the same direction (or the exit trajectory)
