@@ -17,8 +17,7 @@ import numpy as np
 
 import rospy
 import moveit_commander
-from geometry_msgs.msg import Pose, Quaternion
-from moveit_msgs.msg import Constraints, JointConstraint
+from geometry_msgs.msg import Quaternion
 from std_msgs.msg import String, Bool
 from sensor_msgs.msg import JointState
 from tf.transformations import (
@@ -167,37 +166,6 @@ def _prepare_group(group):
     group.set_start_state_to_current_state()
 
 
-def _make_joint6_constraint(group) -> Constraints:
-    """
-    Return a path constraint that keeps the wrist roll joint (last active joint)
-    near its current value during OMPL planning.
-
-    When solving orientation-only goals, OMPL is free to vary joint6 (wrist roll)
-    arbitrarily because it has no effect on EEF pointing direction.  On every
-    new target it can choose a wildly different joint6 value, causing large
-    unnecessary wrist rotations that overheat the motor.
-
-    A JointConstraint bounds how far OMPL will move joint6 away from its current
-    position.  ±0.5 rad (~28°) is generous enough to never block valid pointing
-    solutions while eliminating the gratuitous full-rotation moves.
-    """
-    joint_names  = group.get_active_joints()
-    joint_values = group.get_current_joint_values()
-    j6_name = joint_names[-1]           # last active joint = wrist roll
-    j6_val  = float(joint_values[-1])
-
-    jc = JointConstraint()
-    jc.joint_name      = j6_name
-    jc.position        = j6_val
-    jc.tolerance_above = 0.1   # ±0.5 rad (~28°) wrist drift allowed
-    jc.tolerance_below = 0.1
-    jc.weight          = 1.0
-
-    c = Constraints()
-    c.joint_constraints.append(jc)
-    return c
-
-
 def _execute_and_check(group, plan) -> bool:
     """
     Execute a plan and return True only if the controller confirms success.
@@ -223,11 +191,13 @@ def _execute_and_check(group, plan) -> bool:
             group.stop()
         except Exception:
             pass
-        
         # wait for _run() to actually return
         t.join(timeout=5.0)
         group.clear_pose_targets()
         group.clear_path_constraints()
+        # Let the controller settle and the joint-state monitor update before
+        # the next planning attempt reads start state.
+        rospy.sleep(1.0)
         return False
 
     group.stop()
@@ -239,23 +209,34 @@ def _execute_and_check(group, plan) -> bool:
     return bool(result)
 
 
-def plan_orientation_only(group, quat_xyzw: np.ndarray) -> bool:
+def _plan_and_execute(group, quat_xyzw: np.ndarray) -> bool:
     """
-    Plan an orientation-only goal (position unconstrained).
-    A JointConstraint on the wrist roll joint keeps joint6 near its current
-    value so OMPL does not choose arbitrary roll solutions that overheat the motor.
+    Plan and execute an orientation-only goal.
+
+    set_orientation_target is the correct API for pointing tasks: position is
+    unconstrained, only the EEF orientation must be achieved.  TRAC-IK samples
+    random EEF positions from the reachable workspace and solves for joint
+    configs that satisfy the orientation — this works regardless of where the
+    arm currently is.
+
+    set_pose_target (position + orientation) fails when the CURRENT EEF position
+    has no IK solution for the desired orientation (e.g. near-singular home
+    config), causing 'unable to sample valid states for goal tree'.  That is
+    why position-anchored goals were unreliable.
+
+    No path constraints are applied.  The goal quaternion is computed as
+    R_delta @ R_current (minimum rotation from current pointing direction to
+    target direction), which naturally preserves joint6 (wrist roll).  TRAC-IK
+    seeded from the current joint state finds the nearest-configuration IK
+    solution, so joint6 only moves the minimum necessary amount.
     """
     for attempt in range(1, MAX_RETRIES + 1):
-        rospy.loginfo(f"Orientation planning — attempt {attempt}/{MAX_RETRIES}")
-
-        # Sync start state to live robot state before every plan
-        # (_prepare_group also clears any leftover path constraints)
         _prepare_group(group)
+
+        rospy.loginfo(f"Planning attempt {attempt}/{MAX_RETRIES}")
 
         group.set_planning_time(PLANNING_TIME)
         group.set_orientation_target(quat_xyzw.tolist(), EEF_LINK)
-        # Keep joint6 near current value — prevents OMPL using large wrist rolls
-        group.set_path_constraints(_make_joint6_constraint(group))
 
         plan_ok, plan, t, err = group.plan()
         group.clear_pose_targets()
@@ -268,66 +249,22 @@ def plan_orientation_only(group, quat_xyzw: np.ndarray) -> bool:
         if _execute_and_check(group, plan):
             return True
 
-        # Controller rejected, but check whether the arm actually got there.
+        # Controller rejected — check if the arm actually reached the goal.
+        # Spurious GOAL_TOLERANCE_VIOLATED can fire even when the arm is on target.
         goal_dir = pointing_dir_from_quat(quat_xyzw)
         cur_dir  = current_pointing_direction(group)
         angular_err = angle_between_deg(cur_dir, goal_dir)
         if angular_err < CLOSE_ENOUGH_DEG:
             rospy.loginfo(
-                f"  Controller rejected but arm is within {angular_err:.1f}°"
-                f" of goal (<{CLOSE_ENOUGH_DEG}°) — accepting result."
+                f"  Controller rejected but arm is within {angular_err:.1f}° "
+                f"of goal (<{CLOSE_ENOUGH_DEG}°) — accepting."
             )
             return True
 
         rospy.logwarn(
-            f"  Execution failed on attempt {attempt} — arm is"
-            f" {angular_err:.1f}° from goal. Re-reading state and retrying …"
+            f"  Execution failed on attempt {attempt} — "
+            f"{angular_err:.1f}° from goal. Retrying …"
         )
-        rospy.sleep(0.3)
-
-    return False
-
-
-def plan_joint_fallback(group, quat_xyzw: np.ndarray) -> bool:
-    """
-    Fallback: full Pose goal at the current EEF position with the desired
-    orientation, giving the planner more flexibility than orientation-only.
-    """
-    q = Quaternion(x=float(quat_xyzw[0]), y=float(quat_xyzw[1]),
-                   z=float(quat_xyzw[2]), w=float(quat_xyzw[3]))
-
-    for attempt in range(1, MAX_RETRIES + 1):
-        _prepare_group(group)
-
-        # Get the CURRENT position — only change the orientation
-        current = group.get_current_pose().pose
-        pose = Pose()
-        pose.position    = current.position   # stay where we are
-        pose.orientation = q                  # new pointing direction
-
-        rospy.loginfo(
-            f"  Joint fallback attempt {attempt}/{MAX_RETRIES}: "
-            f"pose at [{current.position.x:.3f}, {current.position.y:.3f}, "
-            f"{current.position.z:.3f}] with new orientation"
-        )
-
-        group.set_planning_time(PLANNING_TIME)
-        group.set_pose_target(pose)
-        # Keep joint6 near current value even in the fallback path
-        group.set_path_constraints(_make_joint6_constraint(group))
-
-        plan_ok, plan, t, err = group.plan()
-        group.clear_pose_targets()
-
-        if not plan_ok:
-            rospy.logwarn(f"    Planning failed (error {err.val}, {t:.2f}s).")
-            continue
-
-        rospy.loginfo(f"    Plan found in {t:.2f}s — executing.")
-        if _execute_and_check(group, plan):
-            return True
-
-        rospy.logwarn(f"    Execution failed on attempt {attempt}.")
         rospy.sleep(0.3)
 
     return False
@@ -476,6 +413,7 @@ class LookAtPointNode:
                         self._busy = False
 
             elif target is not None:
+                do_backoff = False
                 try:
                     success = self._point_at(target)
                     if success:
@@ -483,12 +421,7 @@ class LookAtPointNode:
                     else:
                         self._consecutive_failures += 1
                         if self._consecutive_failures >= THERMAL_BACKOFF_FAILURES:
-                            rospy.logwarn(
-                                "[look_at_point] %d consecutive full failures — "
-                                "pausing %.0fs for motor cooldown.",
-                                self._consecutive_failures, THERMAL_BACKOFF_SEC,
-                            )
-                            rospy.sleep(THERMAL_BACKOFF_SEC)
+                            do_backoff = True
                             self._consecutive_failures = 0
                 except Exception as e:
                     rospy.logerr("_point_at raised: %s", e)
@@ -496,6 +429,15 @@ class LookAtPointNode:
                     rospy.sleep(MIN_REPLAN_INTERVAL)   # let controller settle
                     with self._lock:
                         self._busy = False
+                # Thermal backoff runs AFTER _busy is cleared so gestures can
+                # queue normally during the cooldown period.
+                if do_backoff:
+                    rospy.logwarn(
+                        "[look_at_point] %d consecutive full failures — "
+                        "pausing %.0fs for motor cooldown.",
+                        THERMAL_BACKOFF_FAILURES, THERMAL_BACKOFF_SEC,
+                    )
+                    rospy.sleep(THERMAL_BACKOFF_SEC)
 
             rate.sleep()
 
@@ -594,30 +536,14 @@ class LookAtPointNode:
         quat    = R_to_quat(R_goal)
         rospy.loginfo(f"  Goal quat (xyzw): {np.round(quat, 4)}")
 
-        # Scale velocity based on angular distance — big moves go slower
-        # to give the Gazebo controller time to track without timeout.
-        # if angle_err > 60:
-        #     scale = 0.60
-        # elif angle_err > 30:
-        #     scale = 0.60
-        # else:
-        scale = MAX_VELOCITY
-        self.group.set_max_velocity_scaling_factor(scale)
-        self.group.set_max_acceleration_scaling_factor(scale)
-        rospy.loginfo(f"  Velocity scale: {scale} (angle_err={angle_err:.0f}\u00b0)")
+        self.group.set_max_velocity_scaling_factor(MAX_VELOCITY)
+        self.group.set_max_acceleration_scaling_factor(MAX_ACCEL)
 
-        # Strategy 1: orientation-only (preferred — no position drift)
-        if plan_orientation_only(self.group, quat):
-            rospy.loginfo("SUCCESS (orientation-only).")
+        if _plan_and_execute(self.group, quat):
+            rospy.loginfo("SUCCESS.")
             return True
 
-        # Strategy 2: full pose goal at current position with new orientation
-        rospy.logwarn("Orientation-only failed \u2014 trying pose-at-current-position fallback \u2026")
-        if plan_joint_fallback(self.group, quat):
-            rospy.loginfo("SUCCESS (pose fallback).")
-            return True
-
-        rospy.logerr("All strategies exhausted for target %s.", np.round(target_point, 3))
+        rospy.logerr("Planning failed for target %s.", np.round(target_point, 3))
         return False
 
 
