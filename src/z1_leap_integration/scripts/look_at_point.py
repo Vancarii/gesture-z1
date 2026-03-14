@@ -13,6 +13,7 @@ import sys
 import math
 import threading
 import json
+from collections import deque
 import numpy as np
 
 import rospy
@@ -53,7 +54,7 @@ CLOSE_ENOUGH_DEG = 12.0
 # MIN_ELEVATION_DEG = -30.0
 
 PLANNING_TIME = 10.0
-MAX_VELOCITY = 0.6    # base velocity — scaled down for large moves
+MAX_VELOCITY = 0.6    # arm velocity
 MAX_ACCEL = 0.3
 
 # Hard timeout for group.execute().  On real hardware the trajectory controller
@@ -66,6 +67,10 @@ MAX_RETRIES = 2
 
 # Settle time after a motion before accepting the next target.
 MIN_REPLAN_INTERVAL = 1.0
+
+# Stored pointing targets are represented as 3D coordinates in robot world
+# frame on a sphere centered at the arm base.
+STORED_TARGET_DISTANCE_M = 5.0
 
 # ---------------------------------------------------------------------------
 # Coordinate frame transform: Leap world → ROS robot world
@@ -150,6 +155,25 @@ def pointing_dir_from_quat(quat_xyzw: np.ndarray) -> np.ndarray:
 def angle_between_deg(a: np.ndarray, b: np.ndarray) -> float:
     cos_a = np.clip(np.dot(unit_vector(a), unit_vector(b)), -1.0, 1.0)
     return math.degrees(math.acos(cos_a))
+
+
+# Parse commands like 'assign,WEATHER_REPORT' or 'check,WEATHER_REPORT'.
+def parse_command_message(raw: str):
+    parts = raw.split(",", 1)
+    if len(parts) != 2:
+        raise ValueError("expected '<command>,<keyword>'")
+
+    command = parts[0].strip().lower()
+    keyword = parts[1].strip()
+    if not command or not keyword:
+        raise ValueError("command and keyword must be non-empty")
+    if command not in {"assign", "check"}:
+        raise ValueError(f"unsupported command '{command}'")
+    return command, keyword
+
+
+def normalize_keyword(keyword: str) -> str:
+    return keyword.strip().upper()
 
 
 # ── Planning helpers ────────────────────────────────────────────────────────
@@ -276,6 +300,10 @@ class LookAtPointNode:
     Persistent ROS node that listens to /leap/pointing_target (published by
     detect_point.py) and continuously orients the arm to point at that target.
 
+    It also listens to /ventriloquism_commands. 'assign,<keyword>' stores the
+    robot's current pointing target under that keyword, and 'check,<keyword>'
+    replays the stored target.
+
     All MoveIt calls are made from a dedicated worker thread so the ROS
     subscriber callback never blocks.  The latest target always wins — if the
     hand moves while the arm is executing, the new position is picked up as
@@ -316,8 +344,11 @@ class LookAtPointNode:
         self._lock = threading.Lock()
         self._pending_target = None   # latest np.ndarray from subscriber
         self._pending_home   = False  # True when /leap/home has been received
+        self._pending_commands = deque()
         self._busy = False  # True while a motion is executing
         self._consecutive_failures = 0      # full-failure count for thermal backoff
+        self._current_target = None  # last successful pointing target in robot frame
+        self._saved_targets = {}     # normalized keyword -> {label: str, target: np.ndarray}
 
         # ── ROS subscribers ────────────────────────────────────────
         rospy.Subscriber(
@@ -328,12 +359,19 @@ class LookAtPointNode:
             "/leap/home", Bool,
             self._home_cb, queue_size=1
         )
+        rospy.Subscriber(
+            "/ventriloquism_commands", String,
+            self._command_cb, queue_size=10
+        )
 
         # ── Worker thread (owns all MoveIt calls) ─────────────────────────
         t = threading.Thread(target=self._worker_loop, daemon=True)
         t.start()
 
-        rospy.loginfo("[look_at_point] Ready — subscribed to /leap/pointing_target")
+        rospy.loginfo(
+            "[look_at_point] Ready — subscribed to /leap/pointing_target, "
+            "/leap/home, and /ventriloquism_commands"
+        )
 
     # ── Subscriber callbacks ────────────────────────────────────
 
@@ -369,6 +407,27 @@ class LookAtPointNode:
         with self._lock:
             self._pending_target = target   # always overwrite — latest wins
 
+    def _command_cb(self, msg: String):
+        """Queue assign/check commands for the worker thread to handle."""
+        try:
+            command, keyword = parse_command_message(msg.data)
+        except ValueError as exc:
+            rospy.logwarn_throttle(
+                5.0,
+                "Malformed /ventriloquism_commands '%s': %s",
+                msg.data,
+                exc,
+            )
+            return
+
+        rospy.loginfo(
+            "[look_at_point] Command received on /ventriloquism_commands: %s,%s",
+            command,
+            keyword,
+        )
+        with self._lock:
+            self._pending_commands.append((command, keyword))
+
     # ── Worker thread ─────────────────────────────────────────────────────
 
     def _worker_loop(self):
@@ -386,9 +445,13 @@ class LookAtPointNode:
         while not rospy.is_shutdown():
             target      = None
             do_home     = False
+            command     = None
             with self._lock:
                 if not self._busy:
-                    if self._pending_home:
+                    if self._pending_commands:
+                        command            = self._pending_commands.popleft()
+                        self._busy         = True
+                    elif self._pending_home:
                         do_home            = True
                         self._pending_home = False
                         self._busy         = True
@@ -397,7 +460,19 @@ class LookAtPointNode:
                         self._pending_target = None
                         self._busy           = True
 
-            if do_home:
+            if command is not None:
+                try:
+                    success = self._handle_command(*command)
+                    if success:
+                        self._consecutive_failures = 0
+                except Exception as e:
+                    rospy.logerr("_handle_command raised: %s", e)
+                finally:
+                    rospy.sleep(MIN_REPLAN_INTERVAL)
+                    with self._lock:
+                        self._busy = False
+
+            elif do_home:
                 try:
                     success = self._do_home()
                     if success:
@@ -440,6 +515,44 @@ class LookAtPointNode:
 
             rate.sleep()
 
+    def _current_target_from_pose(self) -> np.ndarray:
+        """Infer current far-field pointing target from the live EEF pose."""
+        direction = current_pointing_direction(self.group)
+        return unit_vector(direction) * STORED_TARGET_DISTANCE_M
+
+    def _handle_command(self, command: str, keyword: str) -> bool:
+        normalized = normalize_keyword(keyword)
+
+        if command == "assign":
+            if self._current_target is not None:
+                target = self._current_target.copy()
+            else:
+                target = self._current_target_from_pose()
+
+            self._saved_targets[normalized] = {
+                "label": keyword,
+                "target": target.copy(),
+            }
+            rospy.loginfo(
+                "[look_at_point] Assigned keyword '%s' to target [%.3f, %.3f, %.3f] m",
+                keyword,
+                target[0], target[1], target[2],
+            )
+            return True
+
+        saved = self._saved_targets.get(normalized)
+        if saved is None:
+            rospy.logwarn("[look_at_point] No saved target for keyword '%s'", keyword)
+            return False
+
+        target = saved["target"].copy()
+        rospy.loginfo(
+            "[look_at_point] Recalling keyword '%s' -> [%.3f, %.3f, %.3f] m",
+            saved["label"],
+            target[0], target[1], target[2],
+        )
+        return self._point_at(target)
+
     # ── Core pointing logic ───────────────────────────────────────────────
     def _do_home(self) -> bool:
         """
@@ -461,6 +574,7 @@ class LookAtPointNode:
                 continue
             rospy.loginfo("Homing: plan found in %.2fs — executing.", t)
             if _execute_and_check(self.group, plan):
+                self._current_target = None
                 rospy.loginfo("Homing SUCCESS.")
                 return True
             rospy.logwarn("Homing: execution failed on attempt %d.", attempt)
@@ -518,6 +632,7 @@ class LookAtPointNode:
         )
 
         if angle_err < ALREADY_POINTING_THRESHOLD_DEG:
+            self._current_target = target_point.copy()
             rospy.loginfo("Already pointing (error %.1f°) — skipping.", angle_err)
             return True
 
@@ -540,6 +655,7 @@ class LookAtPointNode:
         self.group.set_max_acceleration_scaling_factor(MAX_ACCEL)
 
         if _plan_and_execute(self.group, quat):
+            self._current_target = target_point.copy()
             rospy.loginfo("SUCCESS.")
             return True
 

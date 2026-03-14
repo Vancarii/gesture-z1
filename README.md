@@ -86,6 +86,7 @@ roslaunch z1_leap_integration real_full.launch
 ### March 10
 - implement scene objects, including the ground and the frame into the scene for collision detection
 - add speaker to the attached-objects of the arm 
+- next step is make the joint 6 always rotate back to straight after planning is done?
 
 ### March 9
 - printed a lot of pieces, 2 types of speaker to arm mounts, a stronger one of previous version and one new one to reduce weight of previous adapter
