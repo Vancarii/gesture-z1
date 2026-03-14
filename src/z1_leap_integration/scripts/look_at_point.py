@@ -1,12 +1,6 @@
 #!/usr/bin/env python3
 """
-Subscribes to /leap/pointing_target published by detect_point.py and
-continuously drives the Z1 arm to point at whatever 3D coordinate the
-Leap Motion detects.
-
-Topic consumed:
-    /leap/pointing_target  (std_msgs/String, JSON)
-    {"target_pos_m": [x, y, z], "frame": "arm_base"}
+Subscribe to Leap targets and orient the Z1 arm to point at them.
 """
 
 import sys
@@ -28,30 +22,18 @@ from tf.transformations import (
 )
 
 
-# ---------------------------------------------------------------------------
 # Configuration
-# ---------------------------------------------------------------------------
 
 PLANNING_GROUP  = "manipulator"
 EEF_LINK        = "link06"
 BASE_FRAME      = "world"
 
-# CONFIRMED from `rosrun tf tf_echo link06 gripperStator`:
-# Translation [0.051, 0.000, 0.000]  →  pointing axis is +X
 EEF_POINT_AXIS  = np.array([1.0, 0.0, 0.0])
 
-# Skip motion if angular error is already within this threshold
 ALREADY_POINTING_THRESHOLD_DEG = 3.0
 
-# After a failed execution, treat the attempt as success if the arm ended up
-# within this many degrees of the goal (catches spurious GOAL_TOLERANCE_VIOLATED
-# where the arm physically reached the target but residual velocity caused a
-# controller rejection — avoids a pointless second move).
+# Accept near-goal controller aborts below this angle.
 CLOSE_ENOUGH_DEG = 12.0
-
-# Reject targets pointing below this elevation angle (degrees below horizontal).
-# Disabled — the ground plane and frame in the MoveIt scene handle this now.
-# MIN_ELEVATION_DEG = -30.0
 
 PLANNING_TIME = 10.0
 MAX_VELOCITY = 0.6    # arm velocity
@@ -65,44 +47,18 @@ EXECUTE_TIMEOUT_SEC = 30.0
 
 MAX_RETRIES = 2
 
-# Settle time after a motion before accepting the next target.
 MIN_REPLAN_INTERVAL = 1.0
 
-# Stored pointing targets are represented as 3D coordinates in robot world
-# frame on a sphere centered at the arm base.
 STORED_TARGET_DISTANCE_M = 5.0
 
-# ---------------------------------------------------------------------------
-# Coordinate frame transform: Leap world → ROS robot world
-# ---------------------------------------------------------------------------
-# detect_point publishes targets in Leap world frame (after tilt correction):
-#   +X = right (from user's perspective)
-#   +Y = up
-#   +Z = toward the user
-#
-# look_at_point (MoveIt) uses ROS robot world frame:
-#   +X = forward (away from user, toward objects)
-#   +Y = left    (from robot's perspective)
-#   +Z = up
-#
-# Physical setup: Leap and arm are mounted so that the user faces the arm,
-# meaning Leap's +Z (toward user) maps to robot's +X (forward), and
-# Leap's +X (user-right) maps to robot's +Y (robot-left = user-right
-# when facing each other).
-#
-#   robot_x = +leap_z
-#   robot_y = +leap_x
-#   robot_z =  leap_y   (up = up, unchanged)
+# Leap world -> robot world
 LEAP_TO_ROBOT = np.array([
     [ 0,  0,  1],
     [ 1,  0,  0],
     [ 0,  1,  0],
 ], dtype=float)
 
-# ---------------------------------------------------------------------------
-
-
-# ── Maths helpers ──────────────────────────────────────────────────────────
+# Math helpers
 
 def rotation_matrix_from_vectors(a: np.ndarray, b: np.ndarray) -> np.ndarray:
     a = unit_vector(a)
@@ -157,7 +113,6 @@ def angle_between_deg(a: np.ndarray, b: np.ndarray) -> float:
     return math.degrees(math.acos(cos_a))
 
 
-# Parse commands like 'assign,WEATHER_REPORT' or 'check,WEATHER_REPORT'.
 def parse_command_message(raw: str):
     parts = raw.split(",", 1)
     if len(parts) != 2:
@@ -176,24 +131,17 @@ def normalize_keyword(keyword: str) -> str:
     return keyword.strip().upper()
 
 
-# ── Planning helpers ────────────────────────────────────────────────────────
+# Planning helpers
 
 def _prepare_group(group):
-    """
-    Always call this immediately before planning.
-    Syncs the planner's start state with the live controller state,
-    which is the primary cause of CONTROL_FAILED.
-    Also clears any path constraints left over from a previous failed attempt.
-    """
+    """Prepare MoveIt state before planning."""
     group.clear_path_constraints()
     group.set_start_state_to_current_state()
 
 
 def _execute_and_check(group, plan) -> bool:
     """
-    Execute a plan and return True only if the controller confirms success.
-    Run execute() in a daemon thread. If it hasn't finished within
-    EXECUTE_TIMEOUT_SEC, call group.stop() to cancel the goal
+    Execute with timeout and return controller success.
     """
     result_holder = [None]
 
@@ -210,16 +158,12 @@ def _execute_and_check(group, plan) -> bool:
             EXECUTE_TIMEOUT_SEC,
         )
         try:
-             # cancels the action goal
             group.stop()
         except Exception:
             pass
-        # wait for _run() to actually return
         t.join(timeout=5.0)
         group.clear_pose_targets()
         group.clear_path_constraints()
-        # Let the controller settle and the joint-state monitor update before
-        # the next planning attempt reads start state.
         rospy.sleep(1.0)
         return False
 
@@ -233,26 +177,7 @@ def _execute_and_check(group, plan) -> bool:
 
 
 def _plan_and_execute(group, quat_xyzw: np.ndarray) -> bool:
-    """
-    Plan and execute an orientation-only goal.
-
-    set_orientation_target is the correct API for pointing tasks: position is
-    unconstrained, only the EEF orientation must be achieved.  TRAC-IK samples
-    random EEF positions from the reachable workspace and solves for joint
-    configs that satisfy the orientation — this works regardless of where the
-    arm currently is.
-
-    set_pose_target (position + orientation) fails when the CURRENT EEF position
-    has no IK solution for the desired orientation (e.g. near-singular home
-    config), causing 'unable to sample valid states for goal tree'.  That is
-    why position-anchored goals were unreliable.
-
-    No path constraints are applied.  The goal quaternion is computed as
-    R_delta @ R_current (minimum rotation from current pointing direction to
-    target direction), which naturally preserves joint6 (wrist roll).  TRAC-IK
-    seeded from the current joint state finds the nearest-configuration IK
-    solution, so joint6 only moves the minimum necessary amount.
-    """
+    """Plan and execute an orientation-only goal."""
     for attempt in range(1, MAX_RETRIES + 1):
         _prepare_group(group)
 
@@ -272,8 +197,6 @@ def _plan_and_execute(group, quat_xyzw: np.ndarray) -> bool:
         if _execute_and_check(group, plan):
             return True
 
-        # Controller rejected — check if the arm actually reached the goal.
-        # Spurious GOAL_TOLERANCE_VIOLATED can fire even when the arm is on target.
         goal_dir = pointing_dir_from_quat(quat_xyzw)
         cur_dir  = current_pointing_direction(group)
         angular_err = angle_between_deg(cur_dir, goal_dir)
@@ -293,25 +216,12 @@ def _plan_and_execute(group, quat_xyzw: np.ndarray) -> bool:
     return False
 
 
-# ── ROS Node ───────────────────────────────────────────────────────────────
-
 class LookAtPointNode:
     """
-    Persistent ROS node that listens to /leap/pointing_target (published by
-    detect_point.py) and continuously orients the arm to point at that target.
-
-    It also listens to /ventriloquism_commands. 'assign,<keyword>' stores the
-    robot's current pointing target under that keyword, and 'check,<keyword>'
-    replays the stored target.
-
-    All MoveIt calls are made from a dedicated worker thread so the ROS
-    subscriber callback never blocks.  The latest target always wins — if the
-    hand moves while the arm is executing, the new position is picked up as
-    soon as the current motion finishes.
+    Listen for targets and orient the arm to point at them.
     """
 
     def __init__(self):
-        # ── MoveIt initialisation (once at startup) ───────────────────────
         moveit_commander.roscpp_initialize(sys.argv)
         self.robot = moveit_commander.RobotCommander()
         self.scene = moveit_commander.PlanningSceneInterface()
@@ -321,8 +231,6 @@ class LookAtPointNode:
         self.group.set_pose_reference_frame(BASE_FRAME)
         self.group.set_end_effector_link(EEF_LINK)
 
-        # Wait for joint states to arrive (real arm needs z1_hw_node +
-        # controller_spawner to finish, which can take 10+ seconds).
         rospy.loginfo("[look_at_point] Waiting for /joint_states ...")
         try:
             rospy.wait_for_message("/joint_states", JointState, timeout=30.0)
@@ -332,7 +240,6 @@ class LookAtPointNode:
                 "[look_at_point] Timed out waiting for /joint_states after 30 s. "
                 "Continuing anyway — MoveIt may report stale poses."
             )
-        # Give TF one more second to propagate the joint positions
         rospy.sleep(1.0)
         eef = self.group.get_current_pose().pose
         rospy.loginfo(
@@ -340,17 +247,15 @@ class LookAtPointNode:
             eef.position.x, eef.position.y, eef.position.z,
         )
 
-        # ── Shared state (lock-protected) ─────────────────────────────────
         self._lock = threading.Lock()
-        self._pending_target = None   # latest np.ndarray from subscriber
-        self._pending_home   = False  # True when /leap/home has been received
+        self._pending_target = None
+        self._pending_home   = False
         self._pending_commands = deque()
-        self._busy = False  # True while a motion is executing
-        self._consecutive_failures = 0      # full-failure count for thermal backoff
-        self._current_target = None  # last successful pointing target in robot frame
-        self._saved_targets = {}     # normalized keyword -> {label: str, target: np.ndarray}
+        self._busy = False
+        self._consecutive_failures = 0
+        self._current_target = None
+        self._saved_targets = {}
 
-        # ── ROS subscribers ────────────────────────────────────────
         rospy.Subscriber(
             "/leap/pointing_target", String,
             self._target_cb, queue_size=1
@@ -364,7 +269,6 @@ class LookAtPointNode:
             self._command_cb, queue_size=10
         )
 
-        # ── Worker thread (owns all MoveIt calls) ─────────────────────────
         t = threading.Thread(target=self._worker_loop, daemon=True)
         t.start()
 
@@ -373,8 +277,6 @@ class LookAtPointNode:
             "/leap/home, and /ventriloquism_commands"
         )
 
-    # ── Subscriber callbacks ────────────────────────────────────
-
     def _home_cb(self, msg: Bool):
         """Preempt any pending pointing target and request a home motion."""
         if not msg.data:
@@ -382,17 +284,13 @@ class LookAtPointNode:
         rospy.loginfo("[look_at_point] /leap/home received — queuing home motion.")
         with self._lock:
             self._pending_home   = True
-            self._pending_target = None   # discard any queued pointing target
+            self._pending_target = None
 
     def _target_cb(self, msg: String):
-        """
-        Called when detect_point publishes a stable target.  Just stores it;
-        the worker thread picks it up when the arm is free.
-        """
+        """Store latest stable target for the worker thread."""
         try:
             data      = json.loads(msg.data)
             leap_tgt  = np.array(data["target_pos_m"], dtype=float)
-            # Convert from Leap world frame to robot world frame
             target    = LEAP_TO_ROBOT @ leap_tgt
         except Exception as e:
             rospy.logwarn_throttle(5.0, "Malformed /leap/pointing_target: %s", e)
@@ -405,7 +303,7 @@ class LookAtPointNode:
             target[0],   target[1],   target[2],
         )
         with self._lock:
-            self._pending_target = target   # always overwrite — latest wins
+            self._pending_target = target
 
     def _command_cb(self, msg: String):
         """Queue assign/check commands for the worker thread to handle."""
@@ -428,16 +326,8 @@ class LookAtPointNode:
         with self._lock:
             self._pending_commands.append((command, keyword))
 
-    # ── Worker thread ─────────────────────────────────────────────────────
-
     def _worker_loop(self):
-        """
-        Poll for a pending target at 10 Hz.  When the arm is free and a new
-        target is waiting, grab it and execute.  MIN_REPLAN_INTERVAL enforces
-        a settle pause between consecutive motions.
-        """
-        # After this many consecutive full failures (all strategies exhausted),
-        # pause to let overheated motors cool before trying again.
+        """Poll pending work and execute one motion at a time."""
         THERMAL_BACKOFF_FAILURES = 3
         THERMAL_BACKOFF_SEC      = 20.0
 
@@ -500,11 +390,9 @@ class LookAtPointNode:
                 except Exception as e:
                     rospy.logerr("_point_at raised: %s", e)
                 finally:
-                    rospy.sleep(MIN_REPLAN_INTERVAL)   # let controller settle
+                    rospy.sleep(MIN_REPLAN_INTERVAL)
                     with self._lock:
                         self._busy = False
-                # Thermal backoff runs AFTER _busy is cleared so gestures can
-                # queue normally during the cooldown period.
                 if do_backoff:
                     rospy.logwarn(
                         "[look_at_point] %d consecutive full failures — "
@@ -553,7 +441,6 @@ class LookAtPointNode:
         )
         return self._point_at(target)
 
-    # ── Core pointing logic ───────────────────────────────────────────────
     def _do_home(self) -> bool:
         """
         Move the arm to the named 'home' position defined in the SRDF
@@ -582,26 +469,12 @@ class LookAtPointNode:
         rospy.logerr("Homing: all attempts exhausted.")
         return False
     def _point_at(self, target_point: np.ndarray):
-        """
-        Orient the arm so EEF_POINT_AXIS (+X of link06) points at target_point.
-
-        The pointing direction is computed from the arm base (world origin),
-        NOT from the current EEF position.  This is critical: orientation-only
-        goals let MoveIt move the EEF to any position, so basing the direction
-        on eef_pos would give a different quaternion goal every time — even for
-        the same target — because eef_pos drifts after each move.
-
-        Since targets are ~5 m away and the arm is ~0.5 m long, the direction
-        from the base is effectively the same as from the EEF, but stable.
-        """
+        """Orient the arm so +X of link06 points at target_point."""
         rospy.loginfo(
             "[look_at_point] Processing target [%.3f, %.3f, %.3f] m",
             target_point[0], target_point[1], target_point[2],
         )
 
-        # Read current EEF orientation once — used for both the angular-error
-        # check and the goal quaternion.  Getting R_current here avoids a
-        # second get_current_pose() call later.
         current_pose_q = self.group.get_current_pose().pose.orientation
         R_current  = quat_to_R(current_pose_q)
         cur_pointing = unit_vector(R_current @ EEF_POINT_AXIS)
@@ -613,16 +486,6 @@ class LookAtPointNode:
             return True
 
         target_dir = target_point / dist
-
-        # Elevation pre-filter disabled — scene collision objects (ground plane,
-        # frame) now prevent the planner from accepting underground trajectories.
-        # elevation_deg = math.degrees(math.asin(np.clip(target_dir[2], -1.0, 1.0)))
-        # if elevation_deg < MIN_ELEVATION_DEG:
-        #     rospy.logwarn(
-        #         f"Target elevation {elevation_deg:.1f}° is below minimum "
-        #         f"{MIN_ELEVATION_DEG}° — ignoring (pointing underground)."
-        #     )
-        #     return True
 
         angle_err = angle_between_deg(cur_pointing, target_dir)
 
@@ -636,16 +499,7 @@ class LookAtPointNode:
             rospy.loginfo("Already pointing (error %.1f°) — skipping.", angle_err)
             return True
 
-        # Build the goal orientation by rotating the CURRENT EEF orientation
-        # by the minimum rotation that aligns cur_pointing → target_dir.
-        #
-        # The old approach (rotation_matrix_from_vectors(EEF_POINT_AXIS, target_dir))
-        # produced a canonical absolute orientation that baked in a specific roll
-        # angle, which could be 90°+ away from joint6's current position.  On real
-        # hardware that drove joint6 to overheat on every target change.
-        #
-        # This approach preserves the current roll — joint6 only moves the minimum
-        # amount needed to redirect the arm, keeping wrist motor load low.
+        # Keep wrist roll near current orientation while redirecting the pointing axis.
         R_delta = rotation_matrix_from_vectors(cur_pointing, target_dir)
         R_goal  = R_delta @ R_current
         quat    = R_to_quat(R_goal)

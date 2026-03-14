@@ -37,28 +37,29 @@ gesture_moveit:
 # Scene collision objects (loaded by scene_publisher.py)
 # All dimensions in metres.
 scene_publisher:
+  # Collision-buffer scale applied manually below (~8% larger).
   collision_objects:
 
     # Mounting plate — arm is 3" forward of frame centre, so frame is offset -0.0762 m in X
     - name: mounting_plate
-      size: [0.508, 0.508, 0.0254]
+      size: [0.54864, 0.54864, 0.02743]
       position: [-0.0762, 0.0, 0.5207]
 
     # Frame posts (4 corners)
     - name: frame_post_front_left
-      size: [0.0254, 0.0254, 0.508]
+      size: [0.02743, 0.02743, 0.54864]
       position: [ 0.1651,  0.2413, 0.2540]
 
     - name: frame_post_front_right
-      size: [0.0254, 0.0254, 0.508]
+      size: [0.02743, 0.02743, 0.54864]
       position: [ 0.1651, -0.2413, 0.2540]
 
     - name: frame_post_rear_left
-      size: [0.0254, 0.0254, 0.508]
+      size: [0.02743, 0.02743, 0.54864]
       position: [-0.3175,  0.2413, 0.2540]
 
     - name: frame_post_rear_right
-      size: [0.0254, 0.0254, 0.508]
+      size: [0.02743, 0.02743, 0.54864]
       position: [-0.3175, -0.2413, 0.2540]
 
     # Ground plane — top face at z=0, aligned with the RViz grid
@@ -76,6 +77,6 @@ scene_publisher:
     #   size:  [depth=45 mm, length=6.75", height=70 mm]
     - name: speaker
       link: link06
-      size: [0.045, 0.17145, 0.07]
+      size: [0.0486, 0.18517, 0.0756]
       position: [0.0735, 0.0, 0.035]
       touch_links: [link06]
